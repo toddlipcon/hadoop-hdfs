@@ -31,6 +31,7 @@
   -->
   <property name="repo.maven.org" value="http://repo1.maven.org/maven2/" override="false"/>
   <property name="snapshot.apache.org" value="https://repository.apache.org/content/repositories/snapshots/" override="false"/>
+  <property name="repository.jboss.org" value="http://repository.jboss.org/maven2/" override="false" />
   <property name="maven2.pattern" value="[organisation]/[module]/[revision]/[module]-[revision]"/>
   <property name="repo.dir" value="${user.home}/.m2/repository"/>
   <property name="maven2.pattern.ext"  value="${maven2.pattern}.[ext]"/>
@@ -41,6 +42,7 @@
     <ibiblio name="maven2" root="${repo.maven.org}" pattern="${maven2.pattern.ext}" m2compatible="true"/>
     <ibiblio name="apache-snapshot" root="${snapshot.apache.org}" m2compatible="true"
         checkmodified="true" changingPattern=".*SNAPSHOT"/>
+    <ibiblio name="jboss" root="${repository.jboss.org}" m2compatible="true" />
 
     <filesystem name="fs" m2compatible="true" force="true">
        <artifact pattern="${repo.dir}/org/apache/hadoop/[module]/[revision]/[module]-[revision].[ext]"/>
@@ -50,16 +52,19 @@
     <chain name="default" dual="true" checkmodified="true" changingPattern=".*SNAPSHOT">
       <resolver ref="apache-snapshot"/> 
       <resolver ref="maven2"/>
+      <resolver ref="jboss" />
     </chain>
 
     <chain name="internal" dual="true">
       <resolver ref="fs"/>
       <resolver ref="apache-snapshot"/> 
       <resolver ref="maven2"/>
+      <resolver ref="jboss" />
     </chain>
 
     <chain name="external">
       <resolver ref="maven2"/>
+      <resolver ref="jboss" />
     </chain>
 
   </resolvers>

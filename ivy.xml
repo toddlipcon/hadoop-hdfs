@@ -78,6 +78,7 @@
 
     <dependency org="org.mockito" name="mockito-all" rev="${mockito-all.version}" conf="common->master"/>
 
+    <dependency org="org.jboss.netty" name="netty" rev="${netty.version}" conf="common->master" />
    </dependencies>
   
 </ivy-module>
