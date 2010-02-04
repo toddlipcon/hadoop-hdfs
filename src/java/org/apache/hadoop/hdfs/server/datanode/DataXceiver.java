@@ -36,6 +36,11 @@ import java.net.SocketException;
 import org.apache.commons.logging.Log;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DataTransferProtocol;
+import org.apache.hadoop.hdfs.protocol.DataTransferOps.OpReadBlock;
+import org.apache.hadoop.hdfs.protocol.DataTransferOps.OpWriteBlock;
+import org.apache.hadoop.hdfs.protocol.DataTransferOps.OpCopyBlock;
+import org.apache.hadoop.hdfs.protocol.DataTransferOps.OpBlockChecksum;
+import org.apache.hadoop.hdfs.protocol.DataTransferOps.OpReplaceBlock;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.FSConstants;
 import org.apache.hadoop.hdfs.protocol.DataTransferProtocol.BlockConstructionStage;
@@ -127,16 +132,15 @@ class DataXceiver extends DataTransferProtocol.Receiver
    */
   @Override
   protected void opReadBlock(DataInputStream in,
-      long blockId, long blockGs, long startOffset, long length,
-      String clientName, BlockAccessToken accessToken) throws IOException {
-    final Block block = new Block(blockId, 0 , blockGs);
+                             OpReadBlock op) throws IOException {
+    final Block block = new Block(op.blockId, 0 , op.blockGs);
     OutputStream baseStream = NetUtils.getOutputStream(s, 
         datanode.socketWriteTimeout);
     DataOutputStream out = new DataOutputStream(
                  new BufferedOutputStream(baseStream, SMALL_BUFFER_SIZE));
     
     if (datanode.isAccessTokenEnabled
-        && !datanode.accessTokenHandler.checkAccess(accessToken, null, blockId,
+        && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, op.blockId,
             AccessTokenHandler.AccessMode.READ)) {
       try {
         ERROR_ACCESS_TOKEN.write(out);
@@ -150,15 +154,15 @@ class DataXceiver extends DataTransferProtocol.Receiver
     // send the block
     BlockSender blockSender = null;
     final String clientTraceFmt =
-      clientName.length() > 0 && ClientTraceLog.isInfoEnabled()
+      op.clientName.length() > 0 && ClientTraceLog.isInfoEnabled()
         ? String.format(DN_CLIENTTRACE_FORMAT, localAddress, remoteAddress,
-            "%d", "HDFS_READ", clientName, "%d",
+            "%d", "HDFS_READ", op.clientName, "%d",
             datanode.dnRegistration.getStorageID(), block, "%d")
         : datanode.dnRegistration + " Served block " + block + " to " +
             s.getInetAddress();
     try {
       try {
-        blockSender = new BlockSender(block, startOffset, length,
+        blockSender = new BlockSender(block, op.blockOffset, op.blockLen,
             true, true, false, datanode, clientTraceFmt);
       } catch(IOException e) {
         ERROR.write(out);
@@ -208,19 +212,16 @@ class DataXceiver extends DataTransferProtocol.Receiver
    * Write a block to disk.
    */
   @Override
-  protected void opWriteBlock(DataInputStream in, long blockId, long blockGs,
-      int pipelineSize, BlockConstructionStage stage,
-      long newGs, long minBytesRcvd, long maxBytesRcvd,
-      String client, DatanodeInfo srcDataNode, DatanodeInfo[] targets,
-      BlockAccessToken accessToken) throws IOException {
+  protected void opWriteBlock(DataInputStream in,
+                              OpWriteBlock op) throws IOException {
 
     if (LOG.isDebugEnabled()) {
       LOG.debug("writeBlock receive buf size " + s.getReceiveBufferSize() +
                 " tcp no delay " + s.getTcpNoDelay());
     }
 
-    final Block block = new Block(blockId, dataXceiverServer.estimateBlockSize,
-        blockGs);
+    final Block block = new Block(op.blockId, dataXceiverServer.estimateBlockSize,
+        op.blockGs);
     LOG.info("Receiving block " + block + 
              " src: " + remoteAddress +
              " dest: " + localAddress);
@@ -229,10 +230,10 @@ class DataXceiver extends DataTransferProtocol.Receiver
     replyOut = new DataOutputStream(
                    NetUtils.getOutputStream(s, datanode.socketWriteTimeout));
     if (datanode.isAccessTokenEnabled
-        && !datanode.accessTokenHandler.checkAccess(accessToken, null, block
+        && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, block
             .getBlockId(), AccessTokenHandler.AccessMode.WRITE)) {
       try {
-        if (client.length() != 0) {
+        if (op.client.length() != 0) {
           ERROR_ACCESS_TOKEN.write(replyOut);
           Text.writeString(replyOut, datanode.dnRegistration.getName());
           replyOut.flush();
@@ -252,33 +253,33 @@ class DataXceiver extends DataTransferProtocol.Receiver
     String firstBadLink = "";           // first datanode that failed in connection setup
     DataTransferProtocol.Status mirrorInStatus = SUCCESS;
     try {
-      if (client.length() == 0 || 
-          stage != BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
+      if (op.client.length() == 0 || 
+          op.stage != BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
         // open a block receiver
         blockReceiver = new BlockReceiver(block, in, 
             s.getRemoteSocketAddress().toString(),
             s.getLocalSocketAddress().toString(),
-            stage, newGs, minBytesRcvd, maxBytesRcvd,
-            client, srcDataNode, datanode);
+            op.stage, op.newGs, op.minBytesRcvd, op.maxBytesRcvd,
+            op.client, op.srcDataNode, datanode);
       } else {
-        datanode.data.recoverClose(block, newGs, minBytesRcvd);
+        datanode.data.recoverClose(block, op.newGs, op.minBytesRcvd);
       }
 
       //
       // Open network conn to backup machine, if 
       // appropriate
       //
-      if (targets.length > 0) {
+      if (op.targets.length > 0) {
         InetSocketAddress mirrorTarget = null;
         // Connect to backup machine
-        mirrorNode = targets[0].getName();
+        mirrorNode = op.targets[0].getName();
         mirrorTarget = NetUtils.createSocketAddr(mirrorNode);
         mirrorSock = datanode.newSocket();
         try {
           int timeoutValue = datanode.socketTimeout
-              + (HdfsConstants.READ_TIMEOUT_EXTENSION * targets.length);
+              + (HdfsConstants.READ_TIMEOUT_EXTENSION * op.targets.length);
           int writeTimeout = datanode.socketWriteTimeout + 
-                      (HdfsConstants.WRITE_TIMEOUT_EXTENSION * targets.length);
+                      (HdfsConstants.WRITE_TIMEOUT_EXTENSION * op.targets.length);
           NetUtils.connect(mirrorSock, mirrorTarget, timeoutValue);
           mirrorSock.setSoTimeout(timeoutValue);
           mirrorSock.setSendBufferSize(DEFAULT_DATA_SOCKET_SIZE);
@@ -290,9 +291,9 @@ class DataXceiver extends DataTransferProtocol.Receiver
 
           // Write header: Copied from DFSClient.java!
           DataTransferProtocol.Sender.opWriteBlock(mirrorOut,
-              blockId, blockGs, 
-              pipelineSize, stage, newGs, minBytesRcvd, maxBytesRcvd, client, 
-              srcDataNode, targets, accessToken);
+              op.blockId, op.blockGs, 
+              op.pipelineSize, op.stage, op.newGs, op.minBytesRcvd, op.maxBytesRcvd, op.client, 
+              op.srcDataNode, op.targets, op.accessToken);
 
           if (blockReceiver != null) { // send checksum header
             blockReceiver.writeChecksumHeader(mirrorOut);
@@ -300,11 +301,11 @@ class DataXceiver extends DataTransferProtocol.Receiver
           mirrorOut.flush();
 
           // read connect ack (only for clients, not for replication req)
-          if (client.length() != 0) {
+          if (op.client.length() != 0) {
             mirrorInStatus = DataTransferProtocol.Status.read(mirrorIn);
             firstBadLink = Text.readString(mirrorIn);
             if (LOG.isDebugEnabled() || mirrorInStatus != SUCCESS) {
-              LOG.info("Datanode " + targets.length +
+              LOG.info("Datanode " + op.targets.length +
                        " got response for connect ack " +
                        " from downstream datanode with firstbadlink as " +
                        firstBadLink);
@@ -312,7 +313,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
           }
 
         } catch (IOException e) {
-          if (client.length() != 0) {
+          if (op.client.length() != 0) {
             ERROR.write(replyOut);
             Text.writeString(replyOut, mirrorNode);
             replyOut.flush();
@@ -323,7 +324,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
           mirrorIn = null;
           IOUtils.closeSocket(mirrorSock);
           mirrorSock = null;
-          if (client.length() > 0) {
+          if (op.client.length() > 0) {
             throw e;
           } else {
             LOG.info(datanode.dnRegistration + ":Exception transfering block " +
@@ -335,9 +336,9 @@ class DataXceiver extends DataTransferProtocol.Receiver
       }
 
       // send connect ack back to source (only for clients)
-      if (client.length() != 0) {
+      if (op.client.length() != 0) {
         if (LOG.isDebugEnabled() || mirrorInStatus != SUCCESS) {
-          LOG.info("Datanode " + targets.length +
+          LOG.info("Datanode " + op.targets.length +
                    " forwarding connect ack to upstream firstbadlink is " +
                    firstBadLink);
         }
@@ -350,21 +351,21 @@ class DataXceiver extends DataTransferProtocol.Receiver
       if (blockReceiver != null) {
         String mirrorAddr = (mirrorSock == null) ? null : mirrorNode;
         blockReceiver.receiveBlock(mirrorOut, mirrorIn, replyOut,
-            mirrorAddr, null, targets.length);
+            mirrorAddr, null, op.targets.length);
       }
 
       // update its generation stamp
-      if (client.length() != 0 && 
-          stage == BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
-        block.setGenerationStamp(newGs);
-        block.setNumBytes(minBytesRcvd);
+      if (op.client.length() != 0 && 
+          op.stage == BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
+        block.setGenerationStamp(op.newGs);
+        block.setNumBytes(op.minBytesRcvd);
       }
       
       // if this write is for a replication request or recovering
       // a failed close for client, then confirm block. For other client-writes,
       // the block is finalized in the PacketResponder.
-      if (client.length() == 0 || 
-          stage == BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
+      if (op.client.length() == 0 || 
+          op.stage == BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
         datanode.closeBlock(block, DataNode.EMPTY_DEL_HINT);
         LOG.info("Received block " + block + 
                  " src: " + remoteAddress +
@@ -396,12 +397,12 @@ class DataXceiver extends DataTransferProtocol.Receiver
    */
   @Override
   protected void opBlockChecksum(DataInputStream in,
-      long blockId, long blockGs, BlockAccessToken accessToken) throws IOException {
-    final Block block = new Block(blockId, 0 , blockGs);
+                                 OpBlockChecksum op) throws IOException {
+    final Block block = new Block(op.blockId, 0 , op.blockGs);
     DataOutputStream out = new DataOutputStream(NetUtils.getOutputStream(s,
         datanode.socketWriteTimeout));
     if (datanode.isAccessTokenEnabled
-        && !datanode.accessTokenHandler.checkAccess(accessToken, null, block
+        && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, block
             .getBlockId(), AccessTokenHandler.AccessMode.READ)) {
       try {
         ERROR_ACCESS_TOKEN.write(out);
@@ -455,11 +456,12 @@ class DataXceiver extends DataTransferProtocol.Receiver
    */
   @Override
   protected void opCopyBlock(DataInputStream in,
-      long blockId, long blockGs, BlockAccessToken accessToken) throws IOException {
+                             OpCopyBlock op)
+    throws IOException {
     // Read in the header
-    Block block = new Block(blockId, 0, blockGs);
+    Block block = new Block(op.blockId, 0, op.blockGs);
     if (datanode.isAccessTokenEnabled
-        && !datanode.accessTokenHandler.checkAccess(accessToken, null, blockId,
+        && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, op.blockId,
             AccessTokenHandler.AccessMode.COPY)) {
       LOG.warn("Invalid access token in request from "
           + remoteAddress + " for OP_COPY_BLOCK for block " + block);
@@ -468,7 +470,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
     }
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
-      LOG.info("Not able to copy block " + blockId + " to " 
+      LOG.info("Not able to copy block " + op.blockId + " to " 
           + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
       sendResponse(s, ERROR, datanode.socketWriteTimeout);
       return;
@@ -525,13 +527,13 @@ class DataXceiver extends DataTransferProtocol.Receiver
    */
   @Override
   protected void opReplaceBlock(DataInputStream in,
-      long blockId, long blockGs, String sourceID, DatanodeInfo proxySource,
-      BlockAccessToken accessToken) throws IOException {
+                                OpReplaceBlock op) throws IOException {
+
     /* read header */
-    final Block block = new Block(blockId, dataXceiverServer.estimateBlockSize,
-        blockGs);
+    final Block block = new Block(op.blockId, dataXceiverServer.estimateBlockSize,
+        op.blockGs);
     if (datanode.isAccessTokenEnabled
-        && !datanode.accessTokenHandler.checkAccess(accessToken, null, blockId,
+        && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, op.blockId,
             AccessTokenHandler.AccessMode.REPLACE)) {
       LOG.warn("Invalid access token in request from "
           + remoteAddress + " for OP_REPLACE_BLOCK for block " + block);
@@ -540,7 +542,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
     }
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
-      LOG.warn("Not able to receive block " + blockId + " from " 
+      LOG.warn("Not able to receive block " + op.blockId + " from " 
           + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
       sendResponse(s, ERROR, datanode.socketWriteTimeout);
       return;
@@ -555,7 +557,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
     try {
       // get the output stream to the proxy
       InetSocketAddress proxyAddr = NetUtils.createSocketAddr(
-          proxySource.getName());
+          op.src.getName());
       proxySock = datanode.newSocket();
       NetUtils.connect(proxySock, proxyAddr, datanode.socketTimeout);
       proxySock.setSoTimeout(datanode.socketTimeout);
@@ -567,7 +569,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
 
       /* send request to the proxy */
       DataTransferProtocol.Sender.opCopyBlock(proxyOut, block.getBlockId(),
-          block.getGenerationStamp(), accessToken);
+          block.getGenerationStamp(), op.accessToken);
 
       // receive the response from the proxy
       proxyReply = new DataInputStream(new BufferedInputStream(
@@ -594,7 +596,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
           dataXceiverServer.balanceThrottler, -1);
                     
       // notify name node
-      datanode.notifyNamenodeReceivedBlock(block, sourceID);
+      datanode.notifyNamenodeReceivedBlock(block, op.storageId);
 
       LOG.info("Moved block " + block + 
           " from " + s.getRemoteSocketAddress());
