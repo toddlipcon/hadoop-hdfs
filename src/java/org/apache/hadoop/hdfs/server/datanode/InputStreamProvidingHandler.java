@@ -32,8 +32,7 @@ import org.jboss.netty.handler.queue.BlockingReadHandler;
 import org.jboss.netty.handler.queue.BlockingReadTimeoutException;
 
 
-
-public class StreamProvidingHandler
+public class InputStreamProvidingHandler
   extends InputStream
   implements ChannelUpstreamHandler,
   LifeCycleAwareChannelHandler
@@ -46,11 +45,11 @@ public class StreamProvidingHandler
 
   private byte oneByteBuf[] = new byte[1];
 
-  // Default to 1 year timeout (ie no timeout, really)
-  private TimeUnit timeoutUnit = TimeUnit.DAYS;
-  private long timeout = 365;
 
-  public StreamProvidingHandler() {
+  // 0 timeout is forever
+  private long timeoutMillis = 0;
+
+  public InputStreamProvidingHandler() {
     blockingReadHandler = new BlockingReadHandler<ChannelBuffer>();
   }
 
@@ -83,7 +82,7 @@ public class StreamProvidingHandler
 
   public void close() throws IOException {
     try {
-      ctx.getChannel().close().await();
+      ctx.getChannel().close().await(timeoutMillis, TimeUnit.MILLISECONDS);
     } catch (ChannelException ce) {
       throw new IOException(ce);
     } catch (InterruptedException ie) {
@@ -100,7 +99,7 @@ public class StreamProvidingHandler
   public int read(byte buf[], int offset, int len) throws IOException {
     try {
       if (curBuf == null || cbis.available() == 0) {
-        curBuf = blockingReadHandler.read(timeout, timeoutUnit);
+        curBuf = blockingReadHandler.read(timeoutMillis, TimeUnit.MILLISECONDS);
         if (curBuf == null) {
           return 0; // EOF (closed)
         }
@@ -116,12 +115,11 @@ public class StreamProvidingHandler
       throw new IOException(ie);
     } catch (BlockingReadTimeoutException te) {
       throw new IOException("Timed out in read after " +
-                            timeout + " " + timeoutUnit);
+                            timeoutMillis + "ms");
     }
   }
 
-  public void setTimeout(long timeout, TimeUnit unit) {
-    this.timeout = timeout;
-    this.timeoutUnit = unit;
+  public void setTimeout(long timeoutMillis) {
+    this.timeoutMillis = timeoutMillis;
   }
 }
