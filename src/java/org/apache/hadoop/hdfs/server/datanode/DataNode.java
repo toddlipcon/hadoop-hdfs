@@ -323,22 +323,18 @@ public class DataNode extends Configured
       this.data = new FSDataset(storage, conf);
     }
 
-      
-    // find free port
-    ServerSocket ss = (socketWriteTimeout > 0) ? 
-          ServerSocketChannel.open().socket() : new ServerSocket();
-    Server.bind(ss, socAddr, 0);
-    ss.setReceiveBufferSize(DEFAULT_DATA_SOCKET_SIZE); 
-    // adjust machine name with the actual port
-    tmpPort = ss.getLocalPort();
-    selfAddr = new InetSocketAddress(ss.getInetAddress().getHostAddress(),
-                                     tmpPort);
+    DataXceiverServer xcs = new DataXceiverServer(socAddr, conf, this);
+
+    tmpPort = xcs.getBoundAddress().getPort();
+    assert tmpPort > 0;
+    selfAddr = new InetSocketAddress(
+      xcs.getBoundAddress().getAddress().getHostAddress(),
+      tmpPort);
     this.dnRegistration.setName(machineName + ":" + tmpPort);
     LOG.info("Opened info server at " + tmpPort);
-      
+
     this.threadGroup = new ThreadGroup("dataXceiverServer");
-    this.dataXceiverServer = new Daemon(threadGroup, 
-        new DataXceiverServer(ss, conf, this));
+    this.dataXceiverServer = new Daemon(threadGroup, xcs);
     this.threadGroup.setDaemon(true); // auto destroy when empty
 
     this.blockReportInterval =

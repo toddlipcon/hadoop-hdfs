@@ -80,7 +80,6 @@ class DataXceiver extends DataTransferProtocol.Receiver
     this.isLocal = s.getInetAddress().equals(s.getLocalAddress());
     this.datanode = datanode;
     this.dataXceiverServer = dataXceiverServer;
-    dataXceiverServer.childSockets.put(s, s);
     remoteAddress = s.getRemoteSocketAddress().toString();
     localAddress = s.getLocalSocketAddress().toString();
 
@@ -106,12 +105,6 @@ class DataXceiver extends DataTransferProtocol.Receiver
 
       // Make sure the xciver count is not exceeded
       int curXceiverCount = datanode.getXceiverCount();
-      if (curXceiverCount > dataXceiverServer.maxXceiverCount) {
-        throw new IOException("xceiverCount " + curXceiverCount
-                              + " exceeds the limit of concurrent xcievers "
-                              + dataXceiverServer.maxXceiverCount);
-      }
-
       opStartTime = DataNode.now();
       processOp(op, in);
     } catch (Throwable t) {
@@ -123,7 +116,6 @@ class DataXceiver extends DataTransferProtocol.Receiver
       }
       IOUtils.closeStream(in);
       IOUtils.closeSocket(s);
-      dataXceiverServer.childSockets.remove(s);
     }
   }
 
