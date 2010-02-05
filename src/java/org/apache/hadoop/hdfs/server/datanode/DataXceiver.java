@@ -159,7 +159,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
             "%d", "HDFS_READ", op.clientName, "%d",
             datanode.dnRegistration.getStorageID(), block, "%d")
         : datanode.dnRegistration + " Served block " + block + " to " +
-            s.getInetAddress();
+            remoteAddress;
     try {
       try {
         blockSender = new BlockSender(block, op.blockOffset, op.blockLen,
@@ -471,7 +471,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
       LOG.info("Not able to copy block " + op.blockId + " to " 
-          + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
+          + remoteAddress + " because threads quota is exceeded.");
       sendResponse(socketOutStream, ERROR);
       return;
     }
@@ -498,7 +498,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
       datanode.myMetrics.bytesRead.inc((int) read);
       datanode.myMetrics.blocksRead.inc();
       
-      LOG.info("Copied block " + block + " to " + s.getRemoteSocketAddress());
+      LOG.info("Copied block " + block + " to " + remoteAddress);
     } catch (IOException ioe) {
       isOpSuccess = false;
       throw ioe;
@@ -541,7 +541,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
       LOG.warn("Not able to receive block " + op.blockId + " from " 
-          + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
+          + remoteAddress + " because threads quota is exceeded.");
       sendResponse(socketOutStream, ERROR);
       return;
     }
