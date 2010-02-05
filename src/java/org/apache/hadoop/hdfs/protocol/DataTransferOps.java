@@ -223,7 +223,7 @@ public interface DataTransferOps {
 
     public OpBlockChecksum() {}
     public OpBlockChecksum(
-      long blockId, long blockGs, BlockAccessToken accesstoken) {
+      long blockId, long blockGs, BlockAccessToken accessToken) {
 
       this.blockId = blockId;
       this.blockGs = blockGs;
