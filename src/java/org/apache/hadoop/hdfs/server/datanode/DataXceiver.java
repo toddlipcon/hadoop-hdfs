@@ -465,14 +465,14 @@ class DataXceiver extends DataTransferProtocol.Receiver
             AccessTokenHandler.AccessMode.COPY)) {
       LOG.warn("Invalid access token in request from "
           + remoteAddress + " for OP_COPY_BLOCK for block " + block);
-      sendResponse(s, ERROR_ACCESS_TOKEN, datanode.socketWriteTimeout);
+      sendResponse(socketOutStream, ERROR_ACCESS_TOKEN);
       return;
     }
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
       LOG.info("Not able to copy block " + op.blockId + " to " 
           + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
-      sendResponse(s, ERROR, datanode.socketWriteTimeout);
+      sendResponse(socketOutStream, ERROR);
       return;
     }
 
@@ -535,14 +535,14 @@ class DataXceiver extends DataTransferProtocol.Receiver
             AccessTokenHandler.AccessMode.REPLACE)) {
       LOG.warn("Invalid access token in request from "
           + remoteAddress + " for OP_REPLACE_BLOCK for block " + block);
-      sendResponse(s, ERROR_ACCESS_TOKEN, datanode.socketWriteTimeout);
+      sendResponse(socketOutStream, ERROR_ACCESS_TOKEN);
       return;
     }
 
     if (!dataXceiverServer.balanceThrottler.acquire()) { // not able to start
       LOG.warn("Not able to receive block " + op.blockId + " from " 
           + s.getRemoteSocketAddress() + " because threads quota is exceeded.");
-      sendResponse(s, ERROR, datanode.socketWriteTimeout);
+      sendResponse(socketOutStream, ERROR);
       return;
     }
 
@@ -597,7 +597,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
       datanode.notifyNamenodeReceivedBlock(block, op.storageId);
 
       LOG.info("Moved block " + block + 
-          " from " + s.getRemoteSocketAddress());
+          " from " + remoteAddress);
       
     } catch (IOException ioe) {
       opStatus = ERROR;
@@ -616,9 +616,9 @@ class DataXceiver extends DataTransferProtocol.Receiver
       
       // send response back
       try {
-        sendResponse(s, opStatus, datanode.socketWriteTimeout);
+        sendResponse(socketOutStream, opStatus);
       } catch (IOException ioe) {
-        LOG.warn("Error writing reply back to " + s.getRemoteSocketAddress());
+        LOG.warn("Error writing reply back to " + remoteAddress);
       }
       IOUtils.closeStream(proxyOut);
       IOUtils.closeStream(blockReceiver);
@@ -644,10 +644,10 @@ class DataXceiver extends DataTransferProtocol.Receiver
    * @param opStatus status message to write
    * @param timeout send timeout
    **/
-  private void sendResponse(Socket s, DataTransferProtocol.Status opStatus,
-      long timeout) throws IOException {
-    DataOutputStream reply = 
-      new DataOutputStream(NetUtils.getOutputStream(s, timeout));
+  private void sendResponse(OutputStream os, DataTransferProtocol.Status opStatus)
+    throws IOException {
+
+    DataOutputStream reply = new DataOutputStream(os);
     try {
       opStatus.write(reply);
       reply.flush();
