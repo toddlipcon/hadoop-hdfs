@@ -136,10 +136,8 @@ class DataXceiver extends DataTransferProtocol.Receiver
   protected void opReadBlock(DataInputStream in,
                              OpReadBlock op) throws IOException {
     final Block block = new Block(op.blockId, 0 , op.blockGs);
-    OutputStream baseStream = NetUtils.getOutputStream(s, 
-        datanode.socketWriteTimeout);
-    DataOutputStream out = new DataOutputStream(
-                 new BufferedOutputStream(baseStream, SMALL_BUFFER_SIZE));
+
+    DataOutputStream out = new DataOutputStream(socketOutStream);
     
     if (datanode.isAccessTokenEnabled
         && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, op.blockId,
@@ -172,7 +170,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
       }
 
       SUCCESS.write(out); // send op status
-      long read = blockSender.sendBlock(out, baseStream, null); // send data
+      long read = blockSender.sendBlock(out, socketOutStream, null); // send data
 
       if (blockSender.isBlockReadFully()) {
         // See if client verification succeeded. 
@@ -488,15 +486,13 @@ class DataXceiver extends DataTransferProtocol.Receiver
           datanode);
 
       // set up response stream
-      OutputStream baseStream = NetUtils.getOutputStream(
-          s, datanode.socketWriteTimeout);
       reply = new DataOutputStream(new BufferedOutputStream(
-          baseStream, SMALL_BUFFER_SIZE));
+          socketOutStream, SMALL_BUFFER_SIZE));
 
       // send status first
       SUCCESS.write(reply);
       // send block content to the target
-      long read = blockSender.sendBlock(reply, baseStream, 
+      long read = blockSender.sendBlock(reply, socketOutStream, 
                                         dataXceiverServer.balanceThrottler);
 
       datanode.myMetrics.bytesRead.inc((int) read);
