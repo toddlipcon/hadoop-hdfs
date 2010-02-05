@@ -399,8 +399,8 @@ class DataXceiver extends DataTransferProtocol.Receiver
   protected void opBlockChecksum(DataInputStream in,
                                  OpBlockChecksum op) throws IOException {
     final Block block = new Block(op.blockId, 0 , op.blockGs);
-    DataOutputStream out = new DataOutputStream(NetUtils.getOutputStream(s,
-        datanode.socketWriteTimeout));
+
+    DataOutputStream out = new DataOutputStream(socketOutStream);
     if (datanode.isAccessTokenEnabled
         && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, block
             .getBlockId(), AccessTokenHandler.AccessMode.READ)) {
