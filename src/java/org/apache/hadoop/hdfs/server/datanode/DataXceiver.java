@@ -28,6 +28,7 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -65,28 +66,40 @@ class DataXceiver extends DataTransferProtocol.Receiver
   public static final Log LOG = DataNode.LOG;
   static final Log ClientTraceLog = DataNode.ClientTraceLog;
   
-  private final Socket s;
+  private final InputStream socketInStream;
+  private final OutputStream socketOutStream;
+
   private final boolean isLocal; //is a local connection?
   private final String remoteAddress; // address of remote side
   private final String localAddress;  // local address of this daemon
   private final DataNode datanode;
   private final DataXceiverServer dataXceiverServer;
-
+  private Socket s; // TODO removeme
   private long opStartTime; //the start time of receiving an Op
   
-  public DataXceiver(Socket s, DataNode datanode, 
-      DataXceiverServer dataXceiverServer) {
-    this.s = s;
-    this.isLocal = s.getInetAddress().equals(s.getLocalAddress());
+  public DataXceiver(InputStream is,
+                     OutputStream os,
+                     DataNode datanode, 
+                     DataXceiverServer dataXceiverServer) throws IOException {
+    this.s = null;
+    this.isLocal = true; // TODOs.getInetAddress().equals(s.getLocalAddress());
     this.datanode = datanode;
     this.dataXceiverServer = dataXceiverServer;
-    remoteAddress = s.getRemoteSocketAddress().toString();
-    localAddress = s.getLocalSocketAddress().toString();
+    remoteAddress = "remoteTODO"; //s.getRemoteSocketAddress().toString();
+    localAddress = "local TODO"; // s.getLocalSocketAddress().toString();
 
     if (LOG.isDebugEnabled()) {
       LOG.debug("Number of active connections is: "
           + datanode.getXceiverCount());
     }
+
+
+    socketInStream = new BufferedInputStream(
+                                           is, 
+                                           SMALL_BUFFER_SIZE);
+
+    socketOutStream = os;
+    //NetUtils.getInputStream(s)
   }
 
   /** Return the datanode object. */
@@ -96,11 +109,8 @@ class DataXceiver extends DataTransferProtocol.Receiver
    * Read/write data from/to the DataXceiveServer.
    */
   public void run() {
-    DataInputStream in=null; 
     try {
-      in = new DataInputStream(
-          new BufferedInputStream(NetUtils.getInputStream(s), 
-                                  SMALL_BUFFER_SIZE));
+      DataInputStream in = new DataInputStream(socketInStream);
       final DataTransferProtocol.Op op = readOp(in);
 
       // Make sure the xciver count is not exceeded
@@ -114,7 +124,7 @@ class DataXceiver extends DataTransferProtocol.Receiver
         LOG.debug(datanode.dnRegistration + ":Number of active connections is: "
             + datanode.getXceiverCount());
       }
-      IOUtils.closeStream(in);
+      IOUtils.closeStream(socketInStream);
       IOUtils.closeSocket(s);
     }
   }
@@ -208,8 +218,8 @@ class DataXceiver extends DataTransferProtocol.Receiver
                               OpWriteBlock op) throws IOException {
 
     if (LOG.isDebugEnabled()) {
-      LOG.debug("writeBlock receive buf size " + s.getReceiveBufferSize() +
-                " tcp no delay " + s.getTcpNoDelay());
+//      LOG.debug("writeBlock receive buf size " + s.getReceiveBufferSize() +
+//                " tcp no delay " + s.getTcpNoDelay());
     }
 
     final Block block = new Block(op.blockId, dataXceiverServer.estimateBlockSize,
@@ -218,9 +228,8 @@ class DataXceiver extends DataTransferProtocol.Receiver
              " src: " + remoteAddress +
              " dest: " + localAddress);
 
-    DataOutputStream replyOut = null;   // stream to prev target
-    replyOut = new DataOutputStream(
-                   NetUtils.getOutputStream(s, datanode.socketWriteTimeout));
+    DataOutputStream replyOut = new DataOutputStream(socketOutStream);
+    // TODO socketWriteTimouet
     if (datanode.isAccessTokenEnabled
         && !datanode.accessTokenHandler.checkAccess(op.accessToken, null, block
             .getBlockId(), AccessTokenHandler.AccessMode.WRITE)) {
@@ -248,11 +257,12 @@ class DataXceiver extends DataTransferProtocol.Receiver
       if (op.client.length() == 0 || 
           op.stage != BlockConstructionStage.PIPELINE_CLOSE_RECOVERY) {
         // open a block receiver
-        blockReceiver = new BlockReceiver(block, in, 
-            s.getRemoteSocketAddress().toString(),
-            s.getLocalSocketAddress().toString(),
-            op.stage, op.newGs, op.minBytesRcvd, op.maxBytesRcvd,
-            op.client, op.srcDataNode, datanode);
+        blockReceiver = new BlockReceiver(
+          block, in, 
+          remoteAddress,
+          localAddress,
+          op.stage, op.newGs, op.minBytesRcvd, op.maxBytesRcvd,
+          op.client, op.srcDataNode, datanode);
       } else {
         datanode.data.recoverClose(block, op.newGs, op.minBytesRcvd);
       }

@@ -37,6 +37,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.channel.ChannelPipeline;
+import org.jboss.netty.channel.ChannelStateEvent;
 import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.channel.Channels;
 import org.jboss.netty.channel.Channel;
@@ -178,10 +179,23 @@ class DataXceiverServer implements Runnable, FSConstants {
   }
 
   public class XceiverServerHandler extends SimpleChannelUpstreamHandler {
+    DataXceiver xcvr;
+
     @Override
-    public void messageReceived(
-            ChannelHandlerContext ctx, MessageEvent e) {
-        e.getChannel().write(e.getMessage());
+    public void channelConnected(ChannelHandlerContext ctx,
+                                 ChannelStateEvent evt)
+      throws Exception {
+      LOG.info("Connection!");
+      InputStreamProvidingHandler isph = new InputStreamProvidingHandler();
+      OutputStreamProvidingHandler os = new OutputStreamProvidingHandler(ctx.getChannel());
+      os.setTimeout(datanode.socketWriteTimeout);
+
+      ctx.getPipeline().remove(this);
+      ctx.getPipeline().addLast("inputStreamProvider", isph);
+      xcvr = new DataXceiver(isph, os,
+                             DataXceiverServer.this.datanode,
+                             DataXceiverServer.this);
+      new Daemon(datanode.threadGroup, xcvr).start();
     }
   }
 

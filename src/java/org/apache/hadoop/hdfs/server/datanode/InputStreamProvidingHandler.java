@@ -15,12 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.hadoop.hdfs;
+package org.apache.hadoop.hdfs.server.datanode;
 
 import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.EOFException;
 import org.jboss.netty.channel.ChannelUpstreamHandler;
 import org.jboss.netty.channel.ChannelEvent;
 import org.jboss.netty.channel.ChannelException;
@@ -82,7 +83,11 @@ public class InputStreamProvidingHandler
 
   public void close() throws IOException {
     try {
-      ctx.getChannel().close().await(timeoutMillis, TimeUnit.MILLISECONDS);
+      if (timeoutMillis > 0) {
+        ctx.getChannel().close().await(timeoutMillis, TimeUnit.MILLISECONDS);
+      } else {
+        ctx.getChannel().close().await();
+      }
     } catch (ChannelException ce) {
       throw new IOException(ce);
     } catch (InterruptedException ie) {
@@ -97,13 +102,28 @@ public class InputStreamProvidingHandler
   }
 
   public int read(byte buf[], int offset, int len) throws IOException {
+    System.err.println("Reading " + len + " bytes...");
     try {
       if (curBuf == null || cbis.available() == 0) {
-        curBuf = blockingReadHandler.read(timeoutMillis, TimeUnit.MILLISECONDS);
+        System.err.println("Need a new buffer...");
+        cbis = null;
+
+        if (timeoutMillis > 0) {
+          curBuf = blockingReadHandler.read(timeoutMillis, TimeUnit.MILLISECONDS);
+        } else {
+          curBuf = blockingReadHandler.read();
+        }
         if (curBuf == null) {
-          return 0; // EOF (closed)
+          if (blockingReadHandler.isClosed()) {
+            System.err.println("Got EOF...");
+            return -1;
+          } else {
+            System.err.println("Got no data...");
+            throw new IOException("No new buf, but also not closed.");
+          }
         }
         cbis = new ChannelBufferInputStream(curBuf);
+        System.err.println("Got a new buffer with " + cbis.available() + " bytes...");
       }
       assert curBuf != null;
       assert cbis != null;

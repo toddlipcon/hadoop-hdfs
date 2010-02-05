@@ -29,7 +29,7 @@ public class OutputStreamProvidingHandler
   extends OutputStream {
 
   Channel channel;
-  int timeoutMillis = 0;
+  long timeoutMillis = 0;
 
 
   public OutputStreamProvidingHandler(Channel channel) {
@@ -40,18 +40,25 @@ public class OutputStreamProvidingHandler
   public void write(int b) throws IOException {
     byte buf[] = new byte[1];
     buf[0] = (byte)(b & 0xFF);
+    write(buf, 0, 1);
   }
 
   @Override
   public void write(byte buf[], int off, int len) throws IOException {
+    System.err.println("Writing len=" + len);
     ChannelBuffer cbuf = ChannelBuffers.wrappedBuffer(buf, off, len);
 
     try {
       ChannelFuture future = channel.write(cbuf);
+      System.err.println("Awaiting future...");
+
       if (!future.await(timeoutMillis)) {
         throw new IOException("Write operation timed out after " + timeoutMillis
                               + "ms");
-      } else if (future.isCancelled()) {
+      }
+      System.err.println("The future is now!");
+
+      if (future.isCancelled()) {
         throw new IOException("Write operation cancelled");
       } else if (!future.isSuccess()) {
         throw new IOException("Write operation failed", future.getCause());
@@ -79,5 +86,9 @@ public class OutputStreamProvidingHandler
     } catch (InterruptedException ie) {
       throw new IOException("Close Interrupted");
     }
+  }
+
+  public void setTimeout(long timeoutMillis) {
+    this.timeoutMillis = timeoutMillis;
   }
 }
