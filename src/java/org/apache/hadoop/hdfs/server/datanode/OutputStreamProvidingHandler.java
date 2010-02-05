@@ -25,8 +25,14 @@ import org.jboss.netty.channel.ChannelFuture;
 import java.io.IOException;
 import java.io.OutputStream;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 public class OutputStreamProvidingHandler
   extends OutputStream {
+
+  public static final Log LOG = LogFactory.getLog(
+    OutputStreamProvidingHandler.class);
 
   Channel channel;
   long timeoutMillis = 0;
@@ -45,18 +51,18 @@ public class OutputStreamProvidingHandler
 
   @Override
   public void write(byte buf[], int off, int len) throws IOException {
-    System.err.println("Writing len=" + len);
+    LOG.debug("Writing len=" + len);
     ChannelBuffer cbuf = ChannelBuffers.wrappedBuffer(buf, off, len);
 
     try {
       ChannelFuture future = channel.write(cbuf);
-      System.err.println("Awaiting future...");
+      LOG.debug("Awaiting future...");
 
       if (!future.await(timeoutMillis)) {
         throw new IOException("Write operation timed out after " + timeoutMillis
                               + "ms");
       }
-      System.err.println("The future is now!");
+      LOG.debug("The future is now!");
 
       if (future.isCancelled()) {
         throw new IOException("Write operation cancelled");

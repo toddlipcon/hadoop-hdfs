@@ -32,12 +32,16 @@ import org.jboss.netty.buffer.ChannelBufferInputStream;
 import org.jboss.netty.handler.queue.BlockingReadHandler;
 import org.jboss.netty.handler.queue.BlockingReadTimeoutException;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 public class InputStreamProvidingHandler
   extends InputStream
   implements ChannelUpstreamHandler,
   LifeCycleAwareChannelHandler
 {
+  public static final Log LOG = LogFactory.getLog(
+    InputStreamProvidingHandler.class);
 
   private ChannelBuffer curBuf = null;
   private ChannelBufferInputStream cbis = null;
@@ -102,10 +106,10 @@ public class InputStreamProvidingHandler
   }
 
   public int read(byte buf[], int offset, int len) throws IOException {
-    System.err.println("Reading " + len + " bytes...");
+    LOG.debug("Reading " + len + " bytes...");
     try {
       if (curBuf == null || cbis.available() == 0) {
-        System.err.println("Need a new buffer...");
+        LOG.debug("Need a new buffer...");
         cbis = null;
 
         if (timeoutMillis > 0) {
@@ -115,15 +119,15 @@ public class InputStreamProvidingHandler
         }
         if (curBuf == null) {
           if (blockingReadHandler.isClosed()) {
-            System.err.println("Got EOF...");
+            LOG.debug("Got EOF...");
             return -1;
           } else {
-            System.err.println("Got no data...");
+            LOG.debug("Got no data...");
             throw new IOException("No new buf, but also not closed.");
           }
         }
         cbis = new ChannelBufferInputStream(curBuf);
-        System.err.println("Got a new buffer with " + cbis.available() + " bytes...");
+        LOG.debug("Got a new buffer with " + cbis.available() + " bytes...");
       }
       assert curBuf != null;
       assert cbis != null;
