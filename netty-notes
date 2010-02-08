@@ -1,0 +1,40 @@
+;; This buffer is for notes you don't want to save, and for Lisp evaluation.
+;; If you want to create a file, visit that file with C-x C-f,
+;; then enter the text in that file's own buffer.
+
+
+
+
+
+message received:
+  write message to downstream
+  submit future to IO
+
+
+
+
+blockwritecoordinator:
+
+  packetReceivedFromClient:
+
+    setreadable on input to false
+
+    enqueue packet on ackQueue
+    writeMessageToDownstream()
+    pendingIO++
+    submit IO request.oncomplete:
+       pendingIO--
+       updateFlowControl
+
+  updateFlowControl:
+    if pendingIO or ackQueue.size is too high:
+      upstreamChannel.setReadable(false)
+    else
+      upstreamChannel.setReadable(true)
+
+  ackReceivedFromDownstream:
+    dequeue from ackQueue
+    updateFlowControl
+    if packet has already been written to local disk, send ack to upstream
+    
+  
