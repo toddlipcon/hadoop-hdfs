@@ -39,7 +39,7 @@ implements NodeRegistration {
   String rpcAddress;          // RPC address of the node
   String httpAddress;         // HTTP address of the node
   NamenodeRole role;          // node role
-  long checkpointTime = -1L;  // the age of the image
+  int newestImageIndex = -1;  // the index of the latest image on this node
 
   public NamenodeRegistration() {
     super();
@@ -49,13 +49,13 @@ implements NodeRegistration {
                               String httpAddress,
                               StorageInfo storageInfo,
                               NamenodeRole role,
-                              long checkpointTime) {
+                              int newestImageIndex) {
     super();
     this.rpcAddress = address;
     this.httpAddress = httpAddress;
     this.setStorageInfo(storageInfo);
     this.role = role;
-    this.checkpointTime = checkpointTime;
+    this.newestImageIndex = newestImageIndex;
   }
 
   @Override // NodeRegistration
@@ -95,8 +95,8 @@ implements NodeRegistration {
   /**
    * Get the age of the image.
    */
-  public long getCheckpointTime() {
-    return checkpointTime;
+  public long getNewestImageIndex() {
+    return newestImageIndex;
   }
 
   /////////////////////////////////////////////////
@@ -116,7 +116,7 @@ implements NodeRegistration {
     Text.writeString(out, httpAddress);
     Text.writeString(out, role.name());
     super.write(out);
-    out.writeLong(checkpointTime);
+    out.writeInt(newestImageIndex);
   }
 
   @Override // Writable
@@ -125,6 +125,6 @@ implements NodeRegistration {
     httpAddress = Text.readString(in);
     role = NamenodeRole.valueOf(Text.readString(in));
     super.readFields(in);
-    checkpointTime = in.readLong();
+    newestImageIndex = in.readInt();
   }
 }

@@ -21,16 +21,11 @@ import java.io.IOException;
 import java.io.File;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.util.Collection;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.apache.hadoop.hdfs.protocol.FSConstants;
-import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.CheckpointStates;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeDirType;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeFile;
 import org.apache.hadoop.hdfs.server.protocol.CheckpointCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
@@ -58,6 +53,11 @@ class Checkpointer extends Daemon {
   volatile boolean shouldRun;
   private long checkpointPeriod;	// in seconds
   private long checkpointSize;    // size (in MB) of current Edit Log
+
+  /**
+   * Number of checkpoints successfully made
+   */
+  private volatile int countSuccessfulCheckpoints;
 
   private BackupStorage getFSImage() {
     return (BackupStorage)backupNode.getFSImage();
@@ -157,6 +157,7 @@ class Checkpointer extends Daemon {
   }
 
   private long getJournalSize() throws IOException {
+    /*
     // If BACKUP node has been loaded
     // get edits size from the local file. ACTIVE has the same.
     if(backupNode.isRole(NamenodeRole.BACKUP)
@@ -164,32 +165,20 @@ class Checkpointer extends Daemon {
       return backupNode.journalSize();
     // Go to the ACTIVE node for its size
     return getNamenode().journalSize(backupNode.getRegistration());
+    TODO
+    */
+    LOG.warn("getJournalSize TODO");
+    return 0;
   }
 
   /**
-   * Download <code>fsimage</code> and <code>edits</code>
-   * files from the remote name-node.
+   * Download <code>fsimage</code> file for a given checkpoint.
    */
   private void downloadCheckpoint(CheckpointSignature sig) throws IOException {
-    // Retrieve image file
-    String fileid = "getimage=1";
-    Collection<File> list = getFSImage().getFiles(NameNodeFile.IMAGE,
-        NameNodeDirType.IMAGE);
-    File[] files = list.toArray(new File[list.size()]);
-    assert files.length > 0 : "No checkpoint targets.";
-    String nnHttpAddr = backupNode.nnHttpAddress;
-    TransferFsImage.getFileClient(nnHttpAddr, fileid, files);
-    LOG.info("Downloaded file " + files[0].getName() + " size " +
-             files[0].length() + " bytes.");
+    BackupStorage bnImage = getFSImage();
 
-    // Retrieve edits file
-    fileid = "getedit=1";
-    list = getFSImage().getFiles(NameNodeFile.EDITS, NameNodeDirType.EDITS);
-    files = list.toArray(new File[list.size()]);
-    assert files.length > 0 : "No checkpoint targets.";
-    TransferFsImage.getFileClient(nnHttpAddr, fileid, files);
-    LOG.info("Downloaded file " + files[0].getName() + " size " +
-        files[0].length() + " bytes.");
+    LOG.info("Downloading checkpoint data for signature: " + sig);
+    bnImage.fetchImageIfNecessary(sig.newestImageIndex);
   }
 
   /**
@@ -197,22 +186,33 @@ class Checkpointer extends Daemon {
    */
   private void uploadCheckpoint(CheckpointSignature sig) throws IOException {
     InetSocketAddress httpSocAddr = backupNode.getHttpAddress();
+    String fsName = backupNode.nnHttpAddress;
     int httpPort = httpSocAddr.getPort();
-    String fileid = "putimage=1&port=" + httpPort +
+    String fileid = "putimage=" +
+      (sig.newestFinalizedEditLogIndex + 1) +
+      "&port=" + httpPort +
       "&machine=" +
       InetAddress.getLocalHost().getHostAddress() +
       "&token=" + sig.toString();
-    LOG.info("Posted URL " + backupNode.nnHttpAddress + fileid);
-    TransferFsImage.getFileClient(backupNode.nnHttpAddress, fileid, (File[])null);
+      LOG.info("Posted URL " + fsName + fileid);
+    TransferFsImage.getFileClient(fsName, fileid, (File[])null);
   }
 
   /**
    * Create a new checkpoint
    */
-  void doCheckpoint() throws IOException {
+  synchronized void doCheckpoint() throws IOException {
     long startTime = FSNamesystem.now();
+    BackupStorage bnImage = getFSImage();
+    bnImage.stopReplicationOnNextRoll();
+    
+    // Now roll the edit logs on the server
+    // - this will trigger us to start logging immediately to the
+    // next edits_inprogress in the new checkpoint dir, but we won't
+    // apply them.
     NamenodeCommand cmd = 
       getNamenode().startCheckpoint(backupNode.getRegistration());
+
     CheckpointCommand cpCmd = null;
     switch(cmd.getAction()) {
       case NamenodeProtocol.ACT_SHUTDOWN:
@@ -225,22 +225,17 @@ class Checkpointer extends Daemon {
       default:
         throw new IOException("Unsupported NamenodeCommand: "+cmd.getAction());
     }
-
+    // Make sure we've truly stopped replication - in the current design
+    // the replication is synchronous, but now is where we need to make sure
+    // we've stopped accepting edits to the FSN
+    bnImage.waitForReplicationToStop();
+    
     CheckpointSignature sig = cpCmd.getSignature();
     assert FSConstants.LAYOUT_VERSION == sig.getLayoutVersion() :
       "Signature should have current layout version. Expected: "
       + FSConstants.LAYOUT_VERSION + " actual "+ sig.getLayoutVersion();
-    assert !backupNode.isRole(NamenodeRole.CHECKPOINT) ||
-      cpCmd.isImageObsolete() : "checkpoint node should always download image.";
-    backupNode.setCheckpointState(CheckpointStates.UPLOAD_START);
-    if(cpCmd.isImageObsolete()) {
-      // First reset storage on disk and memory state
-      backupNode.resetNamespace();
-      downloadCheckpoint(sig);
-    }
 
-    BackupStorage bnImage = getFSImage();
-    bnImage.loadCheckpoint(sig);
+    syncWithCheckpointSignature(sig);
     sig.validateStorageInfo(bnImage);
     bnImage.saveCheckpoint();
 
@@ -249,12 +244,38 @@ class Checkpointer extends Daemon {
 
     getNamenode().endCheckpoint(backupNode.getRegistration(), sig);
 
-    bnImage.convergeJournalSpool();
+    bnImage.catchupSynchronization();
     backupNode.setRegistration(); // keep registration up to date
-    if(backupNode.isRole(NamenodeRole.CHECKPOINT))
-        getFSImage().getEditLog().close();
+    countSuccessfulCheckpoints++;
     LOG.info("Checkpoint completed in "
-        + (FSNamesystem.now() - startTime)/1000 + " seconds."
-        +	" New Image Size: " + bnImage.getFsImageName().length());
+        + (FSNamesystem.now() - startTime)/1000 + " seconds.");
+// TODO        +	" New Image Size: " + bnImage.getFsImageName().length());
+  }
+  
+  void syncWithCheckpointSignature(CheckpointSignature sig) throws IOException {
+    BackupStorage bnImage = getFSImage();
+    if (bnImage.needsBootstrapping(sig)) {
+      LOG.info("Backup image needs bootstrapping - " +
+          "resetting and downloading checkpoint");
+      backupNode.resetNamespace();
+      downloadCheckpoint(sig);
+      bnImage.loadFSImage(
+          bnImage.getFirstReadableFsImageFile(sig.newestImageIndex));
+      bnImage.namesystemReflectsLogsThrough = sig.newestImageIndex - 1;
+    }
+    assert bnImage.namesystemReflectsLogsThrough >= sig.newestImageIndex - 1;
+    
+    for (int logIndex = bnImage.namesystemReflectsLogsThrough + 1;
+         logIndex <= sig.newestFinalizedEditLogIndex;
+         logIndex++) {
+      LOG.info("Fetching and applying log index #"+ logIndex);
+      bnImage.fetchLogIfNecessary(logIndex);
+      bnImage.applyLog(logIndex);
+    }
+    assert bnImage.namesystemReflectsLogsThrough == sig.newestFinalizedEditLogIndex;
+  }
+
+  public int getNumSuccessfulCheckpoints() {
+    return countSuccessfulCheckpoints;
   }
 }

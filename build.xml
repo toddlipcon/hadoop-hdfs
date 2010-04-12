@@ -539,6 +539,7 @@
         <sysproperty key="test.build.extraconf" value="${test.build.extraconf}" />
         <sysproperty key="hadoop.policy.file" value="hadoop-policy.xml"/>
         <sysproperty key="hdfs.rpc.engine" value="${test.hdfs.rpc.engine}"/>
+        <jvmarg value="-ea" />
         <classpath refid="test.classpath"/>
         <!-- Pass probability specifications to the spawn JVM -->
         <syspropertyset id="FaultProbabilityProperties">

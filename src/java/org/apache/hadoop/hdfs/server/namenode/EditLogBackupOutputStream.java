@@ -30,6 +30,7 @@ import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.util.StringUtils;
 
 /**
  * An implementation of the abstract class {@link EditLogOutputStream},
@@ -147,7 +148,7 @@ class EditLogBackupOutputStream extends EditLogOutputStream {
       JournalRecord jRec = null;
       for(; idx < bufReadySize; idx++) {
         jRec = bufReady.get(idx);
-        if(jRec.op >= FSEditLog.Ops.OP_JSPOOL_START)
+        if(jRec.op == FSEditLog.Ops.OP_ROLL_LOGS)
           break;  // special operation should be sent in a separate call to BN
         jRec.write(out);
       }

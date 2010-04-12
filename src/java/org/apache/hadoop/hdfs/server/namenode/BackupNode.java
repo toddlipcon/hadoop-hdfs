@@ -20,6 +20,8 @@ package org.apache.hadoop.hdfs.server.namenode;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.FSConstants;
@@ -31,7 +33,6 @@ import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.namenode.CheckpointSignature;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.CheckpointStates;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.conf.Configuration;
@@ -78,6 +79,7 @@ public class BackupNode extends NameNode {
     String addr = conf.get(BN_ADDRESS_NAME_KEY, BN_ADDRESS_DEFAULT);
     int port = NetUtils.createSocketAddr(addr).getPort();
     String hostName = DNS.getDefaultHost("default");
+    LOG.info("BN going to bind to:" + hostName + ":" + port);
     return new InetSocketAddress(hostName, port);
   }
 
@@ -105,10 +107,11 @@ public class BackupNode extends NameNode {
 
   @Override // NameNode
   protected void loadNamesystem(Configuration conf) throws IOException {
-    BackupStorage bnImage = new BackupStorage();
+    BackupStorage bnImage = new BackupStorage(this);
     this.namesystem = new FSNamesystem(conf, bnImage);
     bnImage.recoverCreateRead(FSNamesystem.getNamespaceDirs(conf),
                               FSNamesystem.getNamespaceEditsDirs(conf));
+    // TODO need to make sure we delete inprogress logs, not recover them!
   }
 
   @Override // NameNode
@@ -199,18 +202,16 @@ public class BackupNode extends NameNode {
           + nnReg.getAddress() + " expecting " + nnRpcAddress);
     BackupStorage bnImage = (BackupStorage)getFSImage();
     switch(jAction) {
-      case (int)JA_IS_ALIVE:
-        return;
       case (int)JA_JOURNAL:
         bnImage.journal(length, args);
         return;
-      case (int)JA_JSPOOL_START:
-        bnImage.startJournalSpool(nnReg);
+      case (int)JA_IS_ALIVE:
         return;
-      case (int)JA_CHECKPOINT_TIME:
-        bnImage.setCheckpointTime(length, args);
-        setRegistration(); // keep registration up to date
-        return;
+      case (int)JA_ROLL_LOGS:
+        IntBuffer ints = ByteBuffer.wrap(args, 1, length-1).asIntBuffer();
+        int targetLogIndex = ints.get(0);
+        bnImage.masterRolledLogs(targetLogIndex);
+        return;      
       default:
         throw new IOException("Unexpected journal action: " + jAction);
     }
@@ -224,7 +225,9 @@ public class BackupNode extends NameNode {
     }
     if(namesystem == null || namesystem.dir == null || getFSImage() == null)
       return true;
-    return fsImage.getEditLog().getNumEditStreams() == 0;
+    // TODO should be a comment to explain this logic!
+    return fsImage.getEditLog() == null ||
+      fsImage.getEditLog().getNumEditStreams() == 0;
   }
 
   private NamespaceInfo handshake(Configuration conf) throws IOException {
@@ -268,14 +271,17 @@ public class BackupNode extends NameNode {
     checkpointManager.doCheckpoint();
   }
 
-  CheckpointStates getCheckpointState() {
-    return getFSImage().getCheckpointState();
+  /**
+   * Return the number of successful checkpoints.
+   * TODO: make this a metric?
+   */
+  public int getNumSuccessfulCheckpoints() {
+    if (checkpointManager == null) {
+      return 0; // still starting up
+    }
+    return checkpointManager.getNumSuccessfulCheckpoints();
   }
-
-  void setCheckpointState(CheckpointStates cs) {
-    getFSImage().setCheckpointState(cs);
-  }
-
+  
   /**
    * Register this backup node with the active name-node.
    * @param nsInfo

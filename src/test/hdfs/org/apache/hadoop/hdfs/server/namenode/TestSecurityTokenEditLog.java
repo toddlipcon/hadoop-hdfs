@@ -107,8 +107,11 @@ public class TestSecurityTokenEditLog extends TestCase {
   
       // set small size of flush buffer
       editLog.setBufferCapacity(2048);
-      editLog.close();
-      editLog.open();
+      
+      // Roll log so new output buffer size takes effect
+      // we should now be writing to edits_inprogress_2
+      fsimage.rollEditLog();
+
       namesystem.getDelegationTokenSecretManager().startThreads();
     
       // Create threads and make them run transactions concurrently.
@@ -127,8 +130,9 @@ public class TestSecurityTokenEditLog extends TestCase {
           i--;      // retry 
         }
       } 
-      
-      editLog.close();
+
+      // Roll another time to finalize edits_2
+      fsimage.rollEditLog();
   
       // Verify that we can read in all the transactions that we have written.
       // If there were any corruptions, it is likely that the reading in
@@ -139,10 +143,10 @@ public class TestSecurityTokenEditLog extends TestCase {
       int numKeys = namesystem.getDelegationTokenSecretManager().getNumberOfKeys();
       for (Iterator<StorageDirectory> it = 
               fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-        File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS);
+        File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS, 2);
         System.out.println("Verifying file: " + editFile);
         int numEdits = loader.loadFSEdits(
-                                  new EditLogFileInputStream(editFile));
+            new EditLogFileInputStream(editFile));
         assertTrue("Verification for " + editFile + " failed. " +
                    "Expected " + (NUM_THREADS * opsPerTrans * NUM_TRANSACTIONS + numKeys) + " transactions. "+
                    "Found " + numEdits + " transactions.",

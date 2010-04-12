@@ -87,16 +87,14 @@ public class FSImage extends Storage {
     IMAGE     ("fsimage"),
     TIME      ("fstime"),
     EDITS     ("edits"),
-    IMAGE_NEW ("fsimage.ckpt"),
-    EDITS_NEW ("edits.new");
-    
+    EDITS_INPROGRESS ("edits_inprogress"),
+    IMAGE_NEW ("fsimage.ckpt");
+  
     private String fileName = null;
     private NameNodeFile(String name) {this.fileName = name;}
     String getName() {return fileName;}
   }
 
-  // checkpoint states
-  enum CheckpointStates{START, ROLLED_EDITS, UPLOAD_START, UPLOAD_DONE; }
   /**
    * Implementation of StorageDirType specific to namenode storage
    * A Storage directory could be of type IMAGE which stores only fsimage,
@@ -121,7 +119,30 @@ public class FSImage extends Storage {
   }
 
   protected FSNamesystem namesystem = null;
-  protected long checkpointTime = -1L;  // The age of the image
+
+  /**
+   * The index of the first edit log not included in this FSImage.
+   * For example, if an image is created by merging fsimage_0 plus
+   * edits_0, edits_1, and edits_2, this value will be set to
+   * 3
+   */
+  protected int mostRecentSavedImageIndex = 0;
+
+
+  /**
+   * The last log index that this namesystem reflects edits from.
+   * 
+   * In the case of a primary NN, this number should generally be
+   * equivalent to the index of the log that's currently being written.
+   * During startup, it is initialized based on the fsimage_N that's loaded
+   * and as logs are loaded it is incremented.
+   * 
+   * In the case of a backup NN, it depends on the current state of synchronization.
+   * @see BackupStorage.journalState
+   */
+  protected volatile int namesystemReflectsLogsThrough = -1;
+
+
   protected FSEditLog editLog = null;
   private boolean isUpgradeFinalized = false;
 
@@ -141,30 +162,24 @@ public class FSImage extends Storage {
    */
   private Collection<URI> checkpointDirs;
   private Collection<URI> checkpointEditsDirs;
-
-  /**
-   * Can fs-image be rolled?
-   */
-  volatile protected CheckpointStates ckptState = FSImage.CheckpointStates.START; 
-
+  
   /**
    * Used for saving the image to disk
    */
   static private final FsPermission FILE_PERM = new FsPermission((short)0);
   static private final byte[] PATH_SEPARATOR = DFSUtil.string2Bytes(Path.SEPARATOR);
-
+  
   /**
    */
   FSImage() {
     this((FSNamesystem)null);
   }
-
+  
   FSImage(FSNamesystem ns) {
     super(NodeType.NAME_NODE);
-    this.editLog = new FSEditLog(this);
     setFSNamesystem(ns);
   }
-
+  
   /**
    * @throws IOException 
    */
@@ -190,7 +205,7 @@ public class FSImage extends Storage {
     editsDirs.add(imageDir);
     setStorageDirectories(dirs, editsDirs);
   }
-  
+
   protected FSNamesystem getFSNamesystem() {
     return namesystem;
   }
@@ -203,11 +218,11 @@ public class FSImage extends Storage {
     LOG.info("set restore failed storage to " + val);
     restoreFailedStorage=val;
   }
-  
+
   public boolean getRestoreFailedStorage() {
     return restoreFailedStorage;
   }
-  
+
   void setStorageDirectories(Collection<URI> fsNameDirs,
                              Collection<URI> fsEditsDirs) throws IOException {
     this.storageDirs = new ArrayList<StorageDirectory>();
@@ -247,7 +262,7 @@ public class FSImage extends Storage {
                     NameNodeDirType.EDITS));
     }
   }
-
+  
   /* 
    * Checks the consistency of a URI, in particular if the scheme 
    * is specified and is supported by a concrete implementation 
@@ -274,32 +289,71 @@ public class FSImage extends Storage {
     checkpointEditsDirs = editsDirs;
   }
   
-  static File getImageFile(StorageDirectory sd, NameNodeFile type) {
-    return new File(sd.getCurrentDir(), type.getName());
+  static String getImageFileName(NameNodeFile type, int index) {
+    assert index >= 0;
+    return type.getName() + "_" + index;
+  }
+  
+  static File getImageFile(StorageDirectory sd, NameNodeFile type, int index) {
+    return new File(sd.getCurrentDir(), getImageFileName(type, index));
+  }
+  
+  File getFirstReadableFsImageFile(int index) throws IOException {
+    return getFirstReadableFile(NameNodeDirType.IMAGE,
+                                NameNodeFile.IMAGE,
+                                index);
+  }
+  
+  File getFirstReadableEditsFile(int index) throws IOException {
+    return getFirstReadableFile(NameNodeDirType.EDITS,
+                                NameNodeFile.EDITS,
+                                index);
+  }
+  
+  public File[] getImageCheckpointFiles(int index) throws IOException {
+    ArrayList<File> list = new ArrayList<File>();
+    for (Iterator<StorageDirectory> it = 
+           dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
+      list.add(getImageFile(it.next(), NameNodeFile.IMAGE_NEW, index));
+    }
+    return list.toArray(new File[list.size()]);
+  }
+  
+  protected File getFirstReadableFile(NameNodeDirType dirType, NameNodeFile fileType,
+                                    int index)
+    throws IOException
+  {
+    StorageDirectory sd = null;
+    for (Iterator<StorageDirectory> it = dirIterator(dirType); it.hasNext();) {
+      sd = it.next();
+      if(sd.getRoot().canRead())
+        return getImageFile(sd, fileType, index);
+    }
+    return null;
   }
   
   List<StorageDirectory> getRemovedStorageDirs() {
     return this.removedStorageDirs;
   }
   
-  File getEditFile(StorageDirectory sd) {
-    return getImageFile(sd, NameNodeFile.EDITS);
+  static File getFinalizedEditsFile(StorageDirectory sd, int index) {
+    return getImageFile(sd, NameNodeFile.EDITS, index); // TODO these functions are an extra indirection
   }
   
-  File getEditNewFile(StorageDirectory sd) {
-    return getImageFile(sd, NameNodeFile.EDITS_NEW);
+  static File getInProgressEditsFile(StorageDirectory sd, int index) {
+    return getImageFile(sd, NameNodeFile.EDITS_INPROGRESS, index);
   }
-
-  Collection<File> getFiles(NameNodeFile type, NameNodeDirType dirType) {
+  
+  Collection<File> getFiles(NameNodeFile type, NameNodeDirType dirType, int index) {
     ArrayList<File> list = new ArrayList<File>();
     Iterator<StorageDirectory> it = (dirType == null) ? dirIterator() :
                                     dirIterator(dirType);
     for ( ;it.hasNext(); ) {
-      list.add(getImageFile(it.next(), type));
+      list.add(getImageFile(it.next(), type, index));
     }
     return list;
   }
-
+  
   Collection<URI> getDirectories(NameNodeDirType dirType) 
       throws IOException {
     ArrayList<URI> list = new ArrayList<URI>();
@@ -316,7 +370,7 @@ public class FSImage extends Storage {
     }
     return list;
   }
-
+  
   /**
    * Retrieve current directories of type IMAGE
    * @return Collection of URI representing image directories 
@@ -325,7 +379,7 @@ public class FSImage extends Storage {
   Collection<URI> getImageDirectories() throws IOException {
     return getDirectories(NameNodeDirType.IMAGE);
   }
-
+  
   /**
    * Retrieve current directories of type EDITS
    * @return Collection of URI representing edits directories 
@@ -334,7 +388,7 @@ public class FSImage extends Storage {
   Collection<URI> getEditsDirectories() throws IOException {
     return getDirectories(NameNodeDirType.EDITS);
   }
-
+  
   /**
    * Return number of storage directories of the given type.
    * @param dirType directory type
@@ -349,12 +403,13 @@ public class FSImage extends Storage {
       numDirs++;
     return numDirs;
   }
-
+  
   /**
    * Analyze storage directories.
    * Recover from previous transitions if required. 
    * Perform fs state transition if necessary depending on the namespace info.
    * Read storage info. 
+   * Note: this does <b>not</b> open the logs for write.
    * 
    * @param dataDirs
    * @param startOpt startup option
@@ -378,7 +433,7 @@ public class FSImage extends Storage {
         && (checkpointDirs == null || checkpointDirs.isEmpty()))
       throw new IOException("Cannot import image from a checkpoint. "
                           + "\"dfs.namenode.checkpoint.dir\" is not set." );
-
+  
     if(startOpt == StartupOption.IMPORT 
         && (checkpointEditsDirs == null || checkpointEditsDirs.isEmpty()))
       throw new IOException("Cannot import image from a checkpoint. "
@@ -440,9 +495,8 @@ public class FSImage extends Storage {
          + " is required.\nPlease restart NameNode with -upgrade option.");
     // check whether distributed upgrade is reguired and/or should be continued
     verifyDistributedUpgradeProgress(startOpt);
-
+  
     // 2. Format unformatted dirs.
-    this.checkpointTime = 0L;
     for (Iterator<StorageDirectory> it = 
                      dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
@@ -460,7 +514,7 @@ public class FSImage extends Storage {
         break;
       }
     }
-
+  
     // 3. Do transitions
     switch(startOpt) {
     case UPGRADE:
@@ -477,11 +531,6 @@ public class FSImage extends Storage {
     }
     
     boolean needToSave = loadFSImage();
-
-    assert editLog != null : "editLog must be initialized";
-    if(!editLog.isOpen())
-      editLog.open();
-    
     return needToSave;
   }
 
@@ -503,16 +552,14 @@ public class FSImage extends Storage {
                                                "previous fs state should not exist during upgrade. "
                                                + "Finalize or rollback first.");
     }
-
-    // load the latest image
+  
     this.loadFSImage();
-
+  
     // Do upgrade for each directory
     long oldCTime = this.getCTime();
     this.cTime = FSNamesystem.now();  // generate new cTime for the state
     int oldLV = this.getLayoutVersion();
     this.layoutVersion = FSConstants.LAYOUT_VERSION;
-    this.checkpointTime = FSNamesystem.now();
     for (Iterator<StorageDirectory> it = 
                            dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
@@ -527,18 +574,23 @@ public class FSImage extends Storage {
       assert curDir.exists() : "Current directory must exist.";
       assert !prevDir.exists() : "prvious directory must not exist.";
       assert !tmpDir.exists() : "prvious.tmp directory must not exist.";
-      assert !editLog.isOpen() : "Edits log must not be open.";
+      assert editLog == null || !editLog.isOpen() : "Edits log must not be open.";
       // rename current to tmp
       rename(curDir, tmpDir);
       // save new image
-      saveCurrent(sd);
+      if (!curDir.mkdir())
+        throw new IOException("Cannot create directory " + curDir);
+      saveFSImage(getImageFile(sd, NameNodeFile.IMAGE, 0));
+      FSEditLog.createEditLogFile(getImageFile(sd, NameNodeFile.EDITS, 0));
+      // write version and time files
+      sd.write();
       // rename tmp to previous
       rename(tmpDir, prevDir);
       isUpgradeFinalized = false;
       LOG.info("Upgrade of " + sd.getRoot() + " is complete.");
     }
     initializeDistributedUpgrade();
-    editLog.open();
+    editLog.openNewLogs(0);
   }
 
   private void doRollback() throws IOException {
@@ -574,7 +626,7 @@ public class FSImage extends Storage {
       File prevDir = sd.getPreviousDir();
       if (!prevDir.exists())
         continue;
-
+  
       LOG.info("Rolling back storage directory " + sd.getRoot()
                + ".\n   new LV = " + prevState.getLayoutVersion()
                + "; new CTime = " + prevState.getCTime());
@@ -586,7 +638,7 @@ public class FSImage extends Storage {
       rename(curDir, tmpDir);
       // rename previous to current
       rename(prevDir, curDir);
-
+  
       // delete tmp dir
       deleteDir(tmpDir);
       LOG.info("Rollback of " + sd.getRoot()+ " is complete.");
@@ -595,7 +647,7 @@ public class FSImage extends Storage {
     // check whether name-node can start in regular mode
     verifyDistributedUpgradeProgress(StartupOption.REGULAR);
   }
-
+  
   private void doFinalize(StorageDirectory sd) throws IOException {
     File prevDir = sd.getPreviousDir();
     if (!prevDir.exists()) { // already discarded
@@ -637,19 +689,19 @@ public class FSImage extends Storage {
     }
     // return back the real image
     realImage.setStorageInfo(ckptImage);
-    checkpointTime = ckptImage.checkpointTime;
+    // -1 here because fsimage_7 reflects only up through edits_6
+    namesystemReflectsLogsThrough = ckptImage.mostRecentSavedImageIndex - 1;
     fsNamesys.dir.fsImage = realImage;
-    // and save it but keep the same checkpointTime
-    saveNamespace(false);
+    saveFSImage(ckptImage.mostRecentSavedImageIndex);
   }
-
+  
   void finalizeUpgrade() throws IOException {
     for (Iterator<StorageDirectory> it = 
                           dirIterator(); it.hasNext();) {
       doFinalize(it.next());
     }
   }
-
+  
   boolean isUpgradeFinalized() {
     return isUpgradeFinalized;
   }
@@ -667,30 +719,7 @@ public class FSImage extends Storage {
     setDistributedUpgradeState(
         sDUS == null? false : Boolean.parseBoolean(sDUS),
         sDUV == null? getLayoutVersion() : Integer.parseInt(sDUV));
-    this.checkpointTime = readCheckpointTime(sd);
   }
-
-  /**
-   * Determine the checkpoint time of the specified StorageDirectory
-   * 
-   * @param sd StorageDirectory to check
-   * @return If file exists and can be read, last checkpoint time. If not, 0L.
-   * @throws IOException On errors processing file pointed to by sd
-   */
-  long readCheckpointTime(StorageDirectory sd) throws IOException {
-    File timeFile = getImageFile(sd, NameNodeFile.TIME);
-    long timeStamp = 0L;
-    if (timeFile.exists() && timeFile.canRead()) {
-      DataInputStream in = new DataInputStream(new FileInputStream(timeFile));
-      try {
-        timeStamp = in.readLong();
-      } finally {
-        in.close();
-      }
-    }
-    return timeStamp;
-  }
-
   /**
    * Write last checkpoint time and version file into the storage directory.
    * 
@@ -711,67 +740,9 @@ public class FSImage extends Storage {
       props.setProperty("distributedUpgradeState", Boolean.toString(uState));
       props.setProperty("distributedUpgradeVersion", Integer.toString(uVersion)); 
     }
-    writeCheckpointTime(sd);
   }
-
-  /**
-   * Write last checkpoint time into a separate file.
-   * 
-   * @param sd
-   * @throws IOException
-   */
-  void writeCheckpointTime(StorageDirectory sd) throws IOException {
-    if (checkpointTime < 0L)
-      return; // do not write negative time
-    File timeFile = getImageFile(sd, NameNodeFile.TIME);
-    if (timeFile.exists() && ! timeFile.delete()) {
-        LOG.error("Cannot delete chekpoint time file: "
-                  + timeFile.getCanonicalPath());
-    }
-    DataOutputStream out = new DataOutputStream(
-                                                new FileOutputStream(timeFile));
-    try {
-      out.writeLong(checkpointTime);
-    } finally {
-      out.close();
-    }
-  }
-
-  /**
-   * Record new checkpoint time in order to
-   * distinguish healthy directories from the removed ones.
-   * If there is an error writing new checkpoint time, the corresponding
-   * storage directory is removed from the list.
-   */
-  void incrementCheckpointTime() {
-    setCheckpointTime(checkpointTime + 1);
-  }
-
-  /**
-   * The age of the namespace state.<p>
-   * Reflects the latest time the image was saved.
-   * Modified with every save or a checkpoint.
-   * Persisted in VERSION file.
-   */
-  long getCheckpointTime() {
-    return checkpointTime;
-  }
-
-  void setCheckpointTime(long newCpT) {
-    checkpointTime = newCpT;
-    // Write new checkpoint time in all storage directories
-    for(Iterator<StorageDirectory> it =
-                          dirIterator(); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        writeCheckpointTime(sd);
-      } catch(IOException e) {
-        // Close any edits stream associated with this dir and remove directory
-        LOG.warn("incrementCheckpointTime failed on " + sd.getRoot().getPath() + ";type="+sd.getStorageDirType());
-      }
-    }
-  }
-
+  
+  
   /**
    * @param sds - array of SDs to process
    * @param propagate - flag, if set - then call corresponding EditLog stream's 
@@ -808,14 +779,13 @@ public class FSImage extends Storage {
     if(propagate && al != null) 
       editLog.processIOError(al, false);
     
-    //if called from edits log, the it will call increment from there
-    if(propagate) incrementCheckpointTime(); 
+    // TODO need to do any rolling stuff here? need to thoroughly test this
   }
-
+  
   public FSEditLog getEditLog() {
     return editLog;
   }
-
+  
   public boolean isConversionNeeded(StorageDirectory sd) throws IOException {
     File oldImageDir = new File(sd.getRoot(), "image");
     if (!oldImageDir.exists()) {
@@ -838,56 +808,12 @@ public class FSImage extends Storage {
     return true;
   }
   
-  //
-  // Atomic move sequence, to recover from interrupted checkpoint
-  //
-  boolean recoverInterruptedCheckpoint(StorageDirectory nameSD,
-                                       StorageDirectory editsSD) 
-                                       throws IOException {
-    boolean needToSave = false;
-    File curFile = getImageFile(nameSD, NameNodeFile.IMAGE);
-    File ckptFile = getImageFile(nameSD, NameNodeFile.IMAGE_NEW);
-
-    //
-    // If we were in the midst of a checkpoint
-    //
-    if (ckptFile.exists()) {
-      needToSave = true;
-      if (getImageFile(editsSD, NameNodeFile.EDITS_NEW).exists()) {
-        //
-        // checkpointing migth have uploaded a new
-        // merged image, but we discard it here because we are
-        // not sure whether the entire merged image was uploaded
-        // before the namenode crashed.
-        //
-        if (!ckptFile.delete()) {
-          throw new IOException("Unable to delete " + ckptFile);
-        }
-      } else {
-        //
-        // checkpointing was in progress when the namenode
-        // shutdown. The fsimage.ckpt was created and the edits.new
-        // file was moved to edits. We complete that checkpoint by
-        // moving fsimage.new to fsimage. There is no need to 
-        // update the fstime file here. renameTo fails on Windows
-        // if the destination file already exists.
-        //
-        if (!ckptFile.renameTo(curFile)) {
-          if (!curFile.delete())
-            LOG.warn("Unable to delete dir " + curFile + " before rename");
-          if (!ckptFile.renameTo(curFile)) {
-            throw new IOException("Unable to rename " + ckptFile +
-                                  " to " + curFile);
-          }
-        }
-      }
-    }
-    return needToSave;
-  }
 
   /**
    * Choose latest image from one of the directories,
    * load it and merge with the edits from that directory.
+   *
+   * Also initializes the edit logs
    * 
    * Saving and loading fsimage should never trigger symlink resolution. 
    * The paths that are persisted do not have *intermediate* symlinks 
@@ -901,120 +827,73 @@ public class FSImage extends Storage {
    * @throws IOException
    */
   boolean loadFSImage() throws IOException {
-    long latestNameCheckpointTime = Long.MIN_VALUE;
-    long latestEditsCheckpointTime = Long.MIN_VALUE;
-    boolean needToSave = false;
-    isUpgradeFinalized = true;
+    FSImageStorageInspector inspector = inspectStorage();
+    isUpgradeFinalized = inspector.isUpgradeFinalized();
+    int lastImageIndex = inspector.getLatestImageIndex();
+    int lastLogIndex = inspector.getLatestEditsIndex();
+  
+    // Recover any logs that may have been in progress during
+    // the shutdown
+    LOG.info("Recovering inprogress logs between index " +
+             lastImageIndex + " and " + lastLogIndex);
+    FSEditLog.recoverInProgressLogs(this, lastImageIndex, lastLogIndex);
+  
+    // Pick an image to load
+    File imageToLoad = getFirstReadableFsImageFile(lastImageIndex);
+    assert imageToLoad.exists();
+  
+    long startTime = FSNamesystem.now();
+    long imageSize = imageToLoad.length();
     
-    StorageDirectory latestNameSD = null;
-    StorageDirectory latestEditsSD = null;
+    //
+    // Load in bits
+    //
+  
+    boolean needToSave = inspector.needToSave;
+  
+    // set our storage info from this particular storage directory
+    // TODO this is a little ugly
+    new StorageDirectory(imageToLoad.getParentFile().getParentFile()).read();
+  
+    needToSave |= loadFSImage(imageToLoad);
+    mostRecentSavedImageIndex = lastImageIndex;
     
-    Collection<String> imageDirs = new ArrayList<String>();
-    Collection<String> editsDirs = new ArrayList<String>();
+    LOG.info("Image file of size " + imageSize + " loaded in " 
+        + (FSNamesystem.now() - startTime)/1000 + " seconds.");    
+  
+    // Load latest edits
+    List<File> editsToLoad = new ArrayList<File>();
+    for (int i = lastImageIndex; i <= lastLogIndex; i++) {
+      editsToLoad.add(getFirstReadableEditsFile(i));     
+    }
+    needToSave |= (loadFSEdits(editsToLoad) > 0);
     
-    // Set to determine if all of storageDirectories share the same checkpoint
-    Set<Long> checkpointTimes = new HashSet<Long>();
-
+    namesystemReflectsLogsThrough = lastLogIndex;
+    return needToSave;
+  }
+  
+  void openLogs() throws IOException {
+    if (editLog != null) {
+      throw new IOException("Logs already open!");
+    }
+    LOG.info("Opening log #" + (namesystemReflectsLogsThrough + 1));
+    // TODO good comment here
+    editLog = new FSEditLog(this, namesystemReflectsLogsThrough + 1);
+    editLog.openNewLogs(namesystemReflectsLogsThrough + 1);
+    namesystemReflectsLogsThrough++;
+  }
+  
+  FSImageStorageInspector inspectStorage() throws IOException {
+    FSImageStorageInspector inspector = new FSImageStorageInspector();
+  
     // Process each of the storage directories to find the pair of
     // newest image file and edit file
     for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
-
-      // Was the file just formatted?
-      if (!sd.getVersionFile().exists()) {
-        needToSave |= true;
-        continue;
-      }
-      
-      boolean imageExists = false;
-      boolean editsExists = false;
-      
-      // Determine if sd is image, edits or both
-      if (sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE)) {
-        imageExists = getImageFile(sd, NameNodeFile.IMAGE).exists();
-        imageDirs.add(sd.getRoot().getCanonicalPath());
-      }
-      
-      if (sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)) {
-        editsExists = getImageFile(sd, NameNodeFile.EDITS).exists();
-        editsDirs.add(sd.getRoot().getCanonicalPath());
-      }
-      
-      checkpointTime = readCheckpointTime(sd);
-
-      checkpointTimes.add(checkpointTime);
-      
-      if (sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE) && 
-         (latestNameCheckpointTime < checkpointTime) && imageExists) {
-        latestNameCheckpointTime = checkpointTime;
-        latestNameSD = sd;
-      }
-      
-      if (sd.getStorageDirType().isOfType(NameNodeDirType.EDITS) && 
-           (latestEditsCheckpointTime < checkpointTime) && editsExists) {
-        latestEditsCheckpointTime = checkpointTime;
-        latestEditsSD = sd;
-      }
-      
-      // check that we have a valid, non-default checkpointTime
-      if (checkpointTime <= 0L)
-        needToSave |= true;
-      
-      // set finalized flag
-      isUpgradeFinalized = isUpgradeFinalized && !sd.getPreviousDir().exists();
+      inspector.inspectDirectory(sd);
     }
-
-    // We should have at least one image and one edits dirs
-    if (latestNameSD == null)
-      throw new IOException("Image file is not found in " + imageDirs);
-    if (latestEditsSD == null)
-      throw new IOException("Edits file is not found in " + editsDirs);
-
-    // Make sure we are loading image and edits from same checkpoint
-    if (latestNameCheckpointTime > latestEditsCheckpointTime
-        && latestNameSD != latestEditsSD
-        && latestNameSD.getStorageDirType() == NameNodeDirType.IMAGE
-        && latestEditsSD.getStorageDirType() == NameNodeDirType.EDITS) {
-      // This is a rare failure when NN has image-only and edits-only
-      // storage directories, and fails right after saving images,
-      // in some of the storage directories, but before purging edits.
-      // See -NOTE- in saveNamespace().
-      LOG.error("This is a rare failure scenario!!!");
-      LOG.error("Image checkpoint time " + latestNameCheckpointTime +
-                " > edits checkpoint time " + latestEditsCheckpointTime);
-      LOG.error("Name-node will treat the image as the latest state of " +
-                "the namespace. Old edits will be discarded.");
-    } else if (latestNameCheckpointTime != latestEditsCheckpointTime)
-      throw new IOException("Inconsistent storage detected, " +
-                      "image and edits checkpoint times do not match. " +
-                      "image checkpoint time = " + latestNameCheckpointTime +
-                      "edits checkpoint time = " + latestEditsCheckpointTime);
     
-    // If there was more than one checkpointTime recorded we should save
-    needToSave |= checkpointTimes.size() != 1;
-    
-    // Recover from previous interrupted checkpoint, if any
-    needToSave |= recoverInterruptedCheckpoint(latestNameSD, latestEditsSD);
-
-    long startTime = FSNamesystem.now();
-    long imageSize = getImageFile(latestNameSD, NameNodeFile.IMAGE).length();
-
-    //
-    // Load in bits
-    //
-    latestNameSD.read();
-    needToSave |= loadFSImage(getImageFile(latestNameSD, NameNodeFile.IMAGE));
-    LOG.info("Image file of size " + imageSize + " loaded in " 
-        + (FSNamesystem.now() - startTime)/1000 + " seconds.");
-    
-    // Load latest edits
-    if (latestNameCheckpointTime > latestEditsCheckpointTime)
-      // the image is already current, discard edits
-      needToSave |= true;
-    else // latestNameCheckpointTime == latestEditsCheckpointTime
-      needToSave |= (loadFSEdits(latestEditsSD) > 0);
-    
-    return needToSave;
+    return inspector;
   }
 
   /**
@@ -1177,6 +1056,19 @@ public class FSImage extends Storage {
     return needToSave;
   }
 
+  short adjustReplication(short replication) {
+    FSNamesystem fsNamesys = getFSNamesystem();
+    short minReplication = fsNamesys.getMinReplication();
+    if (replication<minReplication) {
+      replication = minReplication;
+    }
+    short maxReplication = fsNamesys.getMaxReplication();
+    if (replication>maxReplication) {
+      replication = maxReplication;
+    }
+    return replication;
+  }
+
   /**
    * Return string representing the parent of the given path.
    */
@@ -1197,26 +1089,20 @@ public class FSImage extends Storage {
    * @return number of edits loaded
    * @throws IOException
    */
-  int loadFSEdits(StorageDirectory sd) throws IOException {
+  int loadFSEdits(List<File> editsFiles) throws IOException {
+
     FSEditLogLoader loader = new FSEditLogLoader(this);
-    
     int numEdits = 0;
-    EditLogFileInputStream edits = 
-      new EditLogFileInputStream(getImageFile(sd, NameNodeFile.EDITS));
     
-    numEdits = loader.loadFSEdits(edits);
-    edits.close();
-    File editsNew = getImageFile(sd, NameNodeFile.EDITS_NEW);
-    
-    if (editsNew.exists() && editsNew.length() > 0) {
-      edits = new EditLogFileInputStream(editsNew);
+    for (File f : editsFiles) {
+      EditLogFileInputStream edits = new EditLogFileInputStream(f);
       numEdits += loader.loadFSEdits(edits);
       edits.close();
     }
-    
+
     // update the counts.
     getFSNamesystem().dir.updateCountForINodeWithQuota();    
-    
+
     return numEdits;
   }
 
@@ -1251,149 +1137,47 @@ public class FSImage extends Storage {
       out.close();
     }
 
-    LOG.info("Image file of size " + newFile.length() + " saved in " 
-        + (FSNamesystem.now() - startTime)/1000 + " seconds.");
+    LOG.info("Image file " + newFile + " of size " +
+             newFile.length() + " saved in " +
+             (FSNamesystem.now() - startTime)/1000 + " seconds.");
+  }
+  
+  public void saveFSImage() throws IOException {
+    saveFSImage(true);
   }
 
-  /**
-   * Save the contents of the FS image and create empty edits.
-   * 
-   * In order to minimize the recovery effort in case of failure during
-   * saveNamespace the algorithm reduces discrepancy between directory states
-   * by performing updates in the following order:
-   * <ol>
-   * <li> rename current to lastcheckpoint.tmp for all of them,</li>
-   * <li> save image and recreate edits for all of them,</li>
-   * <li> rename lastcheckpoint.tmp to previous.checkpoint.</li>
-   * </ol>
-   * On stage (2) we first save all images, then recreate edits.
-   * Otherwise the name-node may purge all edits and fail,
-   * in which case the journal will be lost.
-   */
-  void saveNamespace(boolean renewCheckpointTime) throws IOException {
-    assert editLog != null : "editLog must be initialized";
-    editLog.close();
-    if(renewCheckpointTime)
-      this.checkpointTime = FSNamesystem.now();
-    ArrayList<StorageDirectory> errorSDs = new ArrayList<StorageDirectory>();
-
-    // mv current -> lastcheckpoint.tmp
-    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        moveCurrent(sd);
-      } catch(IOException ie) {
-        LOG.error("Unable to move current for " + sd.getRoot(), ie);
-        errorSDs.add(sd);
-      }
+  // TODO clean up these interfaces
+  public void saveFSImage(boolean rollLogsFirst) throws IOException {
+    // If we're already writing an edit log, roll ahead.
+    int imageIndexToSave = namesystemReflectsLogsThrough + 1;
+    if (rollLogsFirst) {
+      LOG.info("Rolling edits log in saveFSImage to " + imageIndexToSave);
+      editLog.rollEditLog(imageIndexToSave);
+      saveFSImage(imageIndexToSave);
+      namesystemReflectsLogsThrough = imageIndexToSave;
+    } else {
+      saveFSImage(imageIndexToSave);
     }
-
-    // save images into current
-    for (Iterator<StorageDirectory> it = dirIterator(NameNodeDirType.IMAGE);
-                                                              it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        saveCurrent(sd);
-      } catch(IOException ie) {
-        LOG.error("Unable to save image for " + sd.getRoot(), ie);
-        errorSDs.add(sd);
-      }
-    }
-
-    // -NOTE-
-    // If NN has image-only and edits-only storage directories and fails here 
-    // the image will have the latest namespace state.
-    // During startup the image-only directories will recover by discarding
-    // lastcheckpoint.tmp, while
-    // the edits-only directories will recover by falling back
-    // to the old state contained in their lastcheckpoint.tmp.
-    // The edits directories should be discarded during startup because their
-    // checkpointTime is older than that of image directories.
-
-    // recreate edits in current
-    for (Iterator<StorageDirectory> it = dirIterator(NameNodeDirType.EDITS);
-                                                              it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        saveCurrent(sd);
-      } catch(IOException ie) {
-        LOG.error("Unable to save edits for " + sd.getRoot(), ie);
-        errorSDs.add(sd);
-      }
-    }
-    // mv lastcheckpoint.tmp -> previous.checkpoint
-    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        moveLastCheckpoint(sd);
-      } catch(IOException ie) {
-        LOG.error("Unable to move last checkpoint for " + sd.getRoot(), ie);
-        errorSDs.add(sd);
-      }
-    }
-    processIOError(errorSDs, false);
-    if(!editLog.isOpen()) editLog.open();
-    ckptState = CheckpointStates.UPLOAD_DONE;
+    // fsimage_N means we have data from all the logs up to but not including
+    // N
   }
+  
+  
+  void saveFSImage(int imageIndex) throws IOException {
+    assert imageIndex == namesystemReflectsLogsThrough + 1:
+      "Trying to save fsimage_" + imageIndex + " but NS " +
+      "reflects logs up to " + namesystemReflectsLogsThrough;
+    
+    for (Iterator<StorageDirectory> it = 
+                           dirIterator(); it.hasNext();) {
+      StorageDirectory sd = it.next();
+      NameNodeDirType dirType = (NameNodeDirType)sd.getStorageDirType();
 
-  /**
-   * Save current image and empty journal into {@code current} directory.
-   */
-  protected void saveCurrent(StorageDirectory sd) throws IOException {
-    File curDir = sd.getCurrentDir();
-    NameNodeDirType dirType = (NameNodeDirType)sd.getStorageDirType();
-    // save new image or new edits
-    if (!curDir.exists() && !curDir.mkdir())
-      throw new IOException("Cannot create directory " + curDir);
-    if (dirType.isOfType(NameNodeDirType.IMAGE))
-      saveFSImage(getImageFile(sd, NameNodeFile.IMAGE));
-    if (dirType.isOfType(NameNodeDirType.EDITS))
-      editLog.createEditLogFile(getImageFile(sd, NameNodeFile.EDITS));
-    // write version and time files
-    sd.write();
-  }
-
-  /**
-   * Move {@code current} to {@code lastcheckpoint.tmp} and
-   * recreate empty {@code current}.
-   * {@code current} is moved only if it is well formatted,
-   * that is contains VERSION file.
-   * 
-   * @see org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory#getLastCheckpointTmp()
-   * @see org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory#getPreviousCheckpoint()
-   */
-  protected void moveCurrent(StorageDirectory sd)
-  throws IOException {
-    File curDir = sd.getCurrentDir();
-    File tmpCkptDir = sd.getLastCheckpointTmp();
-    // mv current -> lastcheckpoint.tmp
-    // only if current is formatted - has VERSION file
-    if(sd.getVersionFile().exists()) {
-      assert curDir.exists() : curDir + " directory must exist.";
-      assert !tmpCkptDir.exists() : tmpCkptDir + " directory must not exist.";
-      rename(curDir, tmpCkptDir);
+      if (dirType.isOfType(NameNodeDirType.IMAGE))
+        saveFSImage(getImageFile(sd, NameNodeFile.IMAGE_NEW, imageIndex));
     }
-    // recreate current
-    if(!curDir.exists() && !curDir.mkdir())
-      throw new IOException("Cannot create directory " + curDir);
-  }
-
-  /**
-   * Move {@code lastcheckpoint.tmp} to {@code previous.checkpoint}
-   * 
-   * @see org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory#getPreviousCheckpoint()
-   * @see org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory#getLastCheckpointTmp()
-   */
-  protected void moveLastCheckpoint(StorageDirectory sd)
-  throws IOException {
-    File tmpCkptDir = sd.getLastCheckpointTmp();
-    File prevCkptDir = sd.getPreviousCheckpoint();
-    // remove previous.checkpoint
-    if (prevCkptDir.exists())
-      deleteDir(prevCkptDir);
-    // mv lastcheckpoint.tmp -> previous.checkpoint
-    if(tmpCkptDir.exists())
-      rename(tmpCkptDir, prevCkptDir);
+    rollFSImage(imageIndex);
+    mostRecentSavedImageIndex = imageIndex;
   }
 
   /**
@@ -1422,8 +1206,14 @@ public class FSImage extends Storage {
   void format(StorageDirectory sd) throws IOException {
     sd.clearDirectory(); // create currrent dir
     sd.lock();
+    // TODO can we just use normal saveImage?
     try {
-      saveCurrent(sd);
+      NameNodeDirType dirType = (NameNodeDirType)sd.getStorageDirType();
+      if (dirType.isOfType(NameNodeDirType.IMAGE))
+        saveFSImage(getImageFile(sd, NameNodeFile.IMAGE, 0));
+      if (dirType.isOfType(NameNodeDirType.EDITS))
+        FSEditLog.createEditLogFile(getImageFile(sd, NameNodeFile.EDITS, 0));
+      sd.write();
     } finally {
       sd.unlock();
     }
@@ -1435,7 +1225,6 @@ public class FSImage extends Storage {
     this.layoutVersion = FSConstants.LAYOUT_VERSION;
     this.namespaceID = newNamespaceID();
     this.cTime = 0L;
-    this.checkpointTime = FSNamesystem.now();
     for (Iterator<StorageDirectory> it = 
                            dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
@@ -1645,105 +1434,70 @@ public class FSImage extends Storage {
    * Moves fsimage.ckpt to fsImage and edits.new to edits
    * Reopens the new edits file.
    */
-  void rollFSImage() throws IOException {
-    rollFSImage(true);
-  }
-
-  void rollFSImage(boolean renewCheckpointTime) throws IOException {
-    if (ckptState != CheckpointStates.UPLOAD_DONE
-      && !(ckptState == CheckpointStates.ROLLED_EDITS
-      && getNumStorageDirs(NameNodeDirType.IMAGE) == 0)) {
-      throw new IOException("Cannot roll fsImage before rolling edits log.");
-    }
-
+  synchronized void rollFSImage(int indexToRoll) throws IOException {
+    // First check that all of the checkpoint uploads are in place
     for (Iterator<StorageDirectory> it = 
-                       dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
+           dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
       StorageDirectory sd = it.next();
-      File ckpt = getImageFile(sd, NameNodeFile.IMAGE_NEW);
+      File ckpt = getImageFile(sd, NameNodeFile.IMAGE_NEW, indexToRoll);
+      File dst =  getImageFile(sd, NameNodeFile.IMAGE, indexToRoll);
       if (!ckpt.exists()) {
         throw new IOException("Checkpoint file " + ckpt +
                               " does not exist");
       }
-    }
-    editLog.purgeEditLog(); // renamed edits.new to edits
-    LOG.debug("rollFSImage after purgeEditLog: storageList=" + listStorageDirectories());
-    //
-    // Renames new image
-    //
-    renameCheckpoint();
-    resetVersion(renewCheckpointTime);
-  }
-
-  /**
-   * Renames new image
-   */
-  void renameCheckpoint() {
-    ArrayList<StorageDirectory> al = null;
-    for (Iterator<StorageDirectory> it = 
-      dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      File ckpt = getImageFile(sd, NameNodeFile.IMAGE_NEW);
-      File curFile = getImageFile(sd, NameNodeFile.IMAGE);
-      // renameTo fails on Windows if the destination file 
-      // already exists.
-      LOG.debug("renaming  " + ckpt.getAbsolutePath() + " to "  + curFile.getAbsolutePath());
-      if (!ckpt.renameTo(curFile)) {
-        if (!curFile.delete() || !ckpt.renameTo(curFile)) {
-          LOG.warn("renaming  " + ckpt.getAbsolutePath() + " to "  + 
-              curFile.getAbsolutePath() + " FAILED");
-
-          if(al == null) al = new ArrayList<StorageDirectory> (1);
-          al.add(sd);
-        }
+      if (dst.exists()) {
+        throw new IOException("Checkpoint file " + dst +
+                              " already exists");
       }
     }
-    if(al != null) processIOError(al, true);
+
+    // Rename all of them
+    ArrayList<StorageDirectory> badDirs = new ArrayList<StorageDirectory>();
+    for (Iterator<StorageDirectory> it = 
+           dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
+      StorageDirectory sd = it.next();
+      File ckpt = getImageFile(sd, NameNodeFile.IMAGE_NEW, indexToRoll);
+      File dst = getImageFile(sd, NameNodeFile.IMAGE, indexToRoll);
+      try {
+        rename(ckpt, dst);
+      } catch (IOException ioe) {
+        badDirs.add(sd);
+      }
+    }
+    if (!badDirs.isEmpty()) processIOError(badDirs, true);
+
+    mostRecentSavedImageIndex = indexToRoll;
+    writeVersionFiles(); // TODO does this really belong here? This is no longer changing.
   }
 
   /**
    * Updates version and fstime files in all directories (fsimage and edits).
    */
-  void resetVersion(boolean renewCheckpointTime) throws IOException {
+  void writeVersionFiles() throws IOException {
     this.layoutVersion = FSConstants.LAYOUT_VERSION;
-    if(renewCheckpointTime)
-      this.checkpointTime = FSNamesystem.now();
-    
+
     ArrayList<StorageDirectory> al = null;
-    for (Iterator<StorageDirectory> it = 
-                           dirIterator(); it.hasNext();) {
+    for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
-      // delete old edits if sd is the image only the directory
-      if (!sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)) {
-        File editsFile = getImageFile(sd, NameNodeFile.EDITS);
-        if(editsFile.exists() && !editsFile.delete())
-          throw new IOException("Cannot delete edits file " 
-                                + editsFile.getCanonicalPath());
-      }
-      // delete old fsimage if sd is the edits only the directory
-      if (!sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE)) {
-        File imageFile = getImageFile(sd, NameNodeFile.IMAGE);
-        if(imageFile.exists() && !imageFile.delete())
-          throw new IOException("Cannot delete image file " 
-                                + imageFile.getCanonicalPath());
-      }
+      // TODO we used to remove any files from the directory if they
+      // were the wrong type (eg edits in an image dir)
       try {
         sd.write();
       } catch (IOException e) {
         LOG.error("Cannot write file " + sd.getRoot(), e);
-        
-        if(al == null) al = new ArrayList<StorageDirectory> (1);
-        al.add(sd);       
+
+        if (al == null)
+          al = new ArrayList<StorageDirectory>(1);
+        al.add(sd);
       }
     }
-    if(al != null) processIOError(al, true);
-    ckptState = FSImage.CheckpointStates.START;
+    if (al != null)
+      processIOError(al, true);
   }
 
   CheckpointSignature rollEditLog() throws IOException {
-    getEditLog().rollEditLog();
-    ckptState = CheckpointStates.ROLLED_EDITS;
-    // If checkpoint fails this should be the most recent image, therefore
-    incrementCheckpointTime();
+    getEditLog().rollEditLog(++namesystemReflectsLogsThrough);
+    // TODO synchronized?
     return new CheckpointSignature(this);
   }
 
@@ -1752,22 +1506,7 @@ public class FSImage extends Storage {
    * namenode.
    */
   void validateCheckpointUpload(CheckpointSignature sig) throws IOException {
-    if (ckptState != CheckpointStates.ROLLED_EDITS) {
-      throw new IOException("Namenode is not expecting an new image " +
-                             ckptState);
-    } 
-    // verify token
-    long modtime = getEditLog().getFsEditTime();
-    if (sig.editsTime != modtime) {
-      throw new IOException("Namenode has an edit log with timestamp of " +
-                            DATE_FORM.format(new Date(modtime)) +
-                            " but new checkpoint was created using editlog " +
-                            " with timestamp " + 
-                            DATE_FORM.format(new Date(sig.editsTime)) + 
-                            ". Checkpoint Aborted.");
-    }
-    sig.validateStorageInfo(this);
-    ckptState = FSImage.CheckpointStates.UPLOAD_START;
+    // TODO
   }
 
   /**
@@ -1803,15 +1542,15 @@ public class FSImage extends Storage {
             && bnReg.getCTime() > this.getCTime())
         || (bnReg.getLayoutVersion() == this.getLayoutVersion()
             && bnReg.getCTime() == this.getCTime()
-            && bnReg.getCheckpointTime() > this.checkpointTime))
+            && bnReg.getNewestImageIndex() > this.mostRecentSavedImageIndex))
       // remote node has newer image age
       msg = "Name node " + bnReg.getAddress()
             + " has newer image layout version: LV = " +bnReg.getLayoutVersion()
             + " cTime = " + bnReg.getCTime()
-            + " checkpointTime = " + bnReg.getCheckpointTime()
+            + " newestImageIndex = " + bnReg.getNewestImageIndex()
             + ". Current version: LV = " + getLayoutVersion()
             + " cTime = " + getCTime()
-            + " checkpointTime = " + checkpointTime;
+            + " mostRecentSavedImageIndex = " + mostRecentSavedImageIndex;
     if(msg != null) {
       LOG.error(msg);
       return new NamenodeCommand(NamenodeProtocol.ACT_SHUTDOWN);
@@ -1819,14 +1558,13 @@ public class FSImage extends Storage {
     boolean isImgObsolete = true;
     if(bnReg.getLayoutVersion() == this.getLayoutVersion()
         && bnReg.getCTime() == this.getCTime()
-        && bnReg.getCheckpointTime() == this.checkpointTime)
+        && bnReg.getNewestImageIndex() == this.mostRecentSavedImageIndex)
       isImgObsolete = false;
     boolean needToReturnImg = true;
     if(getNumStorageDirs(NameNodeDirType.IMAGE) == 0)
       // do not return image if there are no image directories
       needToReturnImg = false;
     CheckpointSignature sig = rollEditLog();
-    getEditLog().logJSpoolStart(bnReg, nnReg);
     return new CheckpointCommand(sig, isImgObsolete, needToReturnImg);
   }
 
@@ -1846,60 +1584,43 @@ public class FSImage extends Storage {
   void endCheckpoint(CheckpointSignature sig, 
                      NamenodeRole remoteNNRole) throws IOException {
     sig.validateStorageInfo(this);
-    // Renew checkpoint time for the active if the other is a checkpoint-node.
-    // The checkpoint-node should have older image for the next checkpoint 
-    // to take effect.
-    // The backup-node always has up-to-date image and will have the same
-    // checkpoint time as the active node.
-    boolean renewCheckpointTime = remoteNNRole.equals(NamenodeRole.CHECKPOINT);
-    rollFSImage(renewCheckpointTime);
-  }
-
-  CheckpointStates getCheckpointState() {
-    return ckptState;
-  }
-
-  void setCheckpointState(CheckpointStates cs) {
-    ckptState = cs;
+    rollFSImage(sig.newestFinalizedEditLogIndex + 1);
   }
 
   /**
-   * This is called when a checkpoint upload finishes successfully.
+   * TODO javadoc
    */
-  synchronized void checkpointUploadDone() {
-    ckptState = CheckpointStates.UPLOAD_DONE;
+  int getNewestImageIndex() {
+    return mostRecentSavedImageIndex;
+  }
+
+  /**
+   * TODO this int is unclear, because sometimes it's not the current
+   * inprogress log!
+   */
+  int getNamesystemReflectsLogsThrough() {
+    return namesystemReflectsLogsThrough;
   }
 
   synchronized void close() throws IOException {
-    getEditLog().close();
-    unlockAll();
-  }
-
-  /**
-   * Return the name of the image file.
-   */
-  File getFsImageName() {
-    StorageDirectory sd = null;
-    for (Iterator<StorageDirectory> it = 
-      dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
-      sd = it.next();
-      if(sd.getRoot().canRead())
-        return getImageFile(sd, NameNodeFile.IMAGE); 
+    LOG.info("FSImage closing...");
+    if (editLog != null) {
+      getEditLog().close();
     }
-    return null;
+    unlockAll();
   }
 
   /**
    * See if any of removed storages iw "writable" again, and can be returned 
    * into service
    */
-  synchronized void attemptRestoreRemovedStorage() {   
+  synchronized void attemptRestoreRemovedStorage(int editLogIndex) {   
     // if directory is "alive" - copy the images there...
     if(!restoreFailedStorage || removedStorageDirs.size() == 0) 
       return; //nothing to restore
     
     LOG.info("FSImage.attemptRestoreRemovedStorage: check removed(failed) " +
-        "storarge. removedStorages size = " + removedStorageDirs.size());
+        "storage. removedStorages size = " + removedStorageDirs.size());
     for(Iterator<StorageDirectory> it = this.removedStorageDirs.iterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
       File root = sd.getRoot();
@@ -1911,8 +1632,7 @@ public class FSImage extends Storage {
           format(sd);
           LOG.info("restoring dir " + sd.getRoot().getAbsolutePath());
           if(sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)) {
-            File eFile = getEditFile(sd);
-            editLog.addNewEditLogStream(eFile);
+            editLog.createAndAddEditLogStream(sd, editLogIndex);
           }
           this.addStorageDir(sd); // restore
           it.remove();
@@ -1922,32 +1642,21 @@ public class FSImage extends Storage {
       }
     }    
   }
-  
-  public File getFsEditName() throws IOException {
-    return getEditLog().getFsEditName();
-  }
 
   File getFsTimeName() {
+    // TODO do we still need the fstime file?
     StorageDirectory sd = null;
     // NameNodeFile.TIME shoul be same on all directories
     for (Iterator<StorageDirectory> it = 
              dirIterator(); it.hasNext();)
       sd = it.next();
-    return getImageFile(sd, NameNodeFile.TIME);
+    return getImageFile(sd, NameNodeFile.TIME, 0);
   }
 
-  /**
-   * Return the name of the image file that is uploaded by periodic
-   * checkpointing.
-   */
-  File[] getFsImageNameCheckpoint() {
-    ArrayList<File> list = new ArrayList<File>();
-    for (Iterator<StorageDirectory> it = 
-                 dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
-      list.add(getImageFile(it.next(), NameNodeFile.IMAGE_NEW));
-    }
-    return list.toArray(new File[list.size()]);
+  public long getTotalEditLogSize() throws IOException {
+    return getEditLog().getTotalEditLogSize(mostRecentSavedImageIndex);
   }
+
 
   /**
    * DatanodeImage is used to store persistent information
@@ -2086,6 +1795,7 @@ public class FSImage extends Storage {
   // This should be reverted to package private once the ImageLoader
   // code is moved into this package. This method should not be called
   // by other code.
+  @SuppressWarnings("deprecation")
   public static String readString(DataInputStream in) throws IOException {
     U_STR.readFields(in);
     return U_STR.toString();
@@ -2097,6 +1807,7 @@ public class FSImage extends Storage {
   }
 
   // Same comments apply for this method as for readString()
+  @SuppressWarnings("deprecation")
   public static byte[] readBytes(DataInputStream in) throws IOException {
     U_STR.readFields(in);
     int len = U_STR.getLength();
@@ -2105,6 +1816,7 @@ public class FSImage extends Storage {
     return bytes;
   }
 
+  @SuppressWarnings("deprecation")
   static void writeString(String str, DataOutputStream out) throws IOException {
     U_STR.set(str);
     U_STR.write(out);

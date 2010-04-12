@@ -35,12 +35,19 @@ class TransferFsImage implements FSConstants {
   
   public final static String CONTENT_LENGTH = "Content-Length";
   
-  private boolean isGetImage;
-  private boolean isGetEdit;
-  private boolean isPutImage;
+  private int targetFileIndex = -1;
+
   private int remoteport;
   private String machineName;
   private CheckpointSignature token;
+
+  enum Action {
+    GET_IMAGE,
+    GET_EDIT,
+    PUT_IMAGE;
+  };
+
+  private Action action;
   
   /**
    * File downloader.
@@ -54,44 +61,43 @@ class TransferFsImage implements FSConstants {
                          HttpServletRequest request,
                          HttpServletResponse response
                          ) throws IOException {
-    isGetImage = isGetEdit = isPutImage = false;
     remoteport = 0;
     machineName = null;
     token = null;
 
-    for (Iterator<String> it = pmap.keySet().iterator(); it.hasNext();) {
-      String key = it.next();
+    for (Map.Entry<String, String[]> entry : pmap.entrySet()) {
+      String key = entry.getKey();
+      String[] val = entry.getValue();
+
       if (key.equals("getimage")) { 
-        isGetImage = true;
+        action = Action.GET_IMAGE;
+        targetFileIndex = Integer.parseInt(val[0]);
       } else if (key.equals("getedit")) { 
-        isGetEdit = true;
+        action = Action.GET_EDIT;
+        targetFileIndex = Integer.parseInt(val[0]);
       } else if (key.equals("putimage")) { 
-        isPutImage = true;
+        action = Action.PUT_IMAGE;
+        targetFileIndex = Integer.parseInt(val[0]);
       } else if (key.equals("port")) { 
-        remoteport = new Integer(pmap.get("port")[0]).intValue();
+        remoteport = Integer.parseInt(val[0]);
       } else if (key.equals("machine")) { 
-        machineName = pmap.get("machine")[0];
+        machineName = val[0];
       } else if (key.equals("token")) { 
-        token = new CheckpointSignature(pmap.get("token")[0]);
+        token = new CheckpointSignature(val[0]);
       }
     }
 
-    int numGets = (isGetImage?1:0) + (isGetEdit?1:0);
-    if ((numGets > 1) || (numGets == 0) && !isPutImage) {
+    if (action == null || targetFileIndex == -1) {
       throw new IOException("Illegal parameters to TransferFsImage");
     }
   }
 
-  boolean getEdit() {
-    return isGetEdit;
+  Action getAction() {
+    return action;
   }
 
-  boolean getImage() {
-    return isGetImage;
-  }
-
-  boolean putImage() {
-    return isPutImage;
+  int getTargetFileIndex() {
+    return targetFileIndex;
   }
 
   CheckpointSignature getToken() {
@@ -150,11 +156,11 @@ class TransferFsImage implements FSConstants {
    * Client-side Method to fetch file from a server
    * Copies the response from the URL to a list of local files.
    */
-  static void getFileClient(String fsName, String id, File[] localPath)
+  static void getFileClient(String fsName, String paramString, File[] localPath)
     throws IOException {
     byte[] buf = new byte[BUFFER_SIZE];
     StringBuilder str = new StringBuilder("http://"+fsName+"/getimage?");
-    str.append(id);
+    str.append(paramString);
 
     //
     // open connection to remote server
@@ -199,11 +205,11 @@ class TransferFsImage implements FSConstants {
           }
         }
       }
-      if (received != advertisedSize) {
-        throw new IOException("File " + str + " received length " + received +
-                              " is not of the advertised size " +
-                              advertisedSize);
-      }
+    }
+    if (received != advertisedSize) {
+      throw new IOException("File " + str + " received length " + received +
+                            " is not of the advertised size " +
+                            advertisedSize);
     }
   }
 }

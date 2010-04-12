@@ -26,6 +26,7 @@ import org.apache.hadoop.hdfs.security.AccessTokenHandler;
 import org.apache.hadoop.hdfs.security.ExportedAccessKeys;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.BlockUCState;
+import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.UpgradeStatusReport;
@@ -3121,7 +3122,7 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
       throw new IOException("Safe mode should be turned ON " +
                             "in order to create namespace image.");
     }
-    getFSImage().saveNamespace(true);
+    getFSImage().saveFSImage(true);
     LOG.info("New namespace image has been created.");
   }
   
@@ -3902,7 +3903,7 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
   }
 
   long getEditLogSize() throws IOException {
-    return getEditLog().getEditLogSize();
+    return getFSImage().getTotalEditLogSize();
   }
 
   synchronized CheckpointSignature rollEditLog() throws IOException {
@@ -3914,13 +3915,14 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
     return getFSImage().rollEditLog();
   }
 
-  synchronized void rollFSImage() throws IOException {
+  synchronized void rollFSImage(CheckpointSignature sig) throws IOException {
     if (isInSafeMode()) {
+      // TODO I think we are actually safe to do this in Safemode
       throw new SafeModeException("Checkpoint not created",
                                   safeMode);
     }
     LOG.info("Roll FSImage from " + Server.getRemoteAddress());
-    getFSImage().rollFSImage();
+    getFSImage().rollFSImage((int) sig.newestFinalizedEditLogIndex + 1);
   }
 
   synchronized NamenodeCommand startCheckpoint(
@@ -3929,7 +3931,7 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
   throws IOException {
     LOG.info("Start checkpoint for " + bnReg.getAddress());
     NamenodeCommand cmd = getFSImage().startCheckpoint(bnReg, nnReg);
-    getEditLog().logSync();
+    getEditLog().logSync(); // TODO still needed?
     return cmd;
   }
 
@@ -4371,17 +4373,20 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
    * @param registration
    * @throws IOException
    */
-  synchronized void registerBackupNode(NamenodeRegistration registration)
-  throws IOException {
-    if(getFSImage().getNamespaceID() != registration.getNamespaceID())
+  synchronized void registerBackupNode(NamenodeRegistration bnReg,
+      NamenodeRegistration nnReg)  throws IOException {
+    if(getFSImage().getNamespaceID() != bnReg.getNamespaceID())
       throw new IOException("Incompatible namespaceIDs: " 
           + " Namenode namespaceID = " + getFSImage().getNamespaceID() 
-          + "; " + registration.getRole() +
-              " node namespaceID = " + registration.getNamespaceID());
-    boolean regAllowed = getEditLog().checkBackupRegistration(registration);
+          + "; " + bnReg.getRole() +
+              " node namespaceID = " + bnReg.getNamespaceID());
+    boolean regAllowed = getEditLog().checkBackupRegistration(bnReg);
     if(!regAllowed)
       throw new IOException("Registration is not allowed. " +
           "Another node is registered as a backup.");
+    if (!bnReg.isRole(NamenodeRole.CHECKPOINT)) {
+      getEditLog().addBackupStream(bnReg, nnReg);
+    }
   }
 
   /**
@@ -4398,6 +4403,7 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
           + " Namenode namespaceID = " + getFSImage().getNamespaceID() 
           + "; " + registration.getRole() +
               " node namespaceID = " + registration.getNamespaceID());
+    LOG.info("Releasing backup node" + registration);
     getEditLog().releaseBackupStream(registration);
   }
 

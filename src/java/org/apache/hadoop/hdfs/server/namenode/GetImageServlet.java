@@ -44,24 +44,28 @@ public class GetImageServlet extends HttpServlet {
       ServletContext context = getServletContext();
       FSImage nnImage = (FSImage)context.getAttribute("name.system.image");
       TransferFsImage ff = new TransferFsImage(pmap, request, response);
-      if (ff.getImage()) {
-        response.setHeader(TransferFsImage.CONTENT_LENGTH,
-          String.valueOf(nnImage.getFsImageName().length()));
-        // send fsImage
-        TransferFsImage.getFileServer(response.getOutputStream(),
-                                      nnImage.getFsImageName()); 
-      } else if (ff.getEdit()) {
-        response.setHeader(TransferFsImage.CONTENT_LENGTH,
-          String.valueOf(nnImage.getFsEditName().length()));
-        // send edits
-        TransferFsImage.getFileServer(response.getOutputStream(),
-                                      nnImage.getFsEditName());
-      } else if (ff.putImage()) {
-        // issue a HTTP get request to download the new fsimage 
-        nnImage.validateCheckpointUpload(ff.getToken());
-        TransferFsImage.getFileClient(ff.getInfoServer(), "getimage=1", 
-                                      nnImage.getFsImageNameCheckpoint());
-        nnImage.checkpointUploadDone();
+
+      switch (ff.getAction()) {
+        case GET_IMAGE:
+          doOutgoingTransfer(
+            nnImage.getFirstReadableFsImageFile(ff.getTargetFileIndex()),
+            response);
+          break;
+        case GET_EDIT:
+          doOutgoingTransfer(
+            nnImage.getFirstReadableEditsFile(ff.getTargetFileIndex()),
+            response);
+          break;
+        case PUT_IMAGE:
+          nnImage.validateCheckpointUpload(ff.getToken());
+          String queryString = "getimage=" + ff.getTargetFileIndex();
+          TransferFsImage.getFileClient(
+            ff.getInfoServer(), queryString,
+            nnImage.getImageCheckpointFiles(ff.getTargetFileIndex()));
+          break;
+
+        default:
+          throw new Exception("Unknown action: " + ff.getAction());
       }
     } catch (Exception ie) {
       String errMsg = "GetImage failed. " + StringUtils.stringifyException(ie);
@@ -70,5 +74,15 @@ public class GetImageServlet extends HttpServlet {
     } finally {
       response.getOutputStream().close();
     }
+  }
+
+
+  private void doOutgoingTransfer(File f,
+                                  HttpServletResponse response)
+    throws ServletException, IOException {
+    response.setHeader(TransferFsImage.CONTENT_LENGTH,
+                       String.valueOf(f.length()));
+    // send fsImage
+    TransferFsImage.getFileServer(response.getOutputStream(), f); 
   }
 }

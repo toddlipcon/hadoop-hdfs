@@ -79,6 +79,13 @@ public class TestBackupNode extends TestCase {
   static String getBackupNodeDir(StartupOption t, int i) {
     return BASE_DIR + "name" + t.getName() + i + "/";
   }
+  
+  private void assertNNFileExists(String name) {
+    // These edits should be going into edits_inprogress_1
+    // (edits_0 was made when the NS was formatted)
+    File path = new File(BASE_DIR, "name1/current/" + name);
+    assertTrue("Path " + path + " should exist", path.exists());
+  }
 
   BackupNode startBackupNode(Configuration conf,
                              StartupOption t, int i) throws IOException {
@@ -95,7 +102,7 @@ public class TestBackupNode extends TestCase {
         LOG.info("Waiting checkpoint to complete...");
         Thread.sleep(1000);
       } catch (Exception e) {}
-    } while(backup.getCheckpointState() != CheckpointStates.START);
+    } while(backup.getNumSuccessfulCheckpoints() == 0 && !backup.isStopRequested());
   }
 
   public void testCheckpoint() throws IOException {
@@ -131,10 +138,15 @@ public class TestBackupNode extends TestCase {
       writeFile(fileSys, file1, replication);
       checkFile(fileSys, file1, replication);
 
+      // These edits should be going into edits_inprogress_1
+      // (edits_0 was made when the NS was formatted)
+      assertNNFileExists("edits_inprogress_1");
+      
       //
       // Take a checkpoint
       //
       backup = startBackupNode(conf, op, 1);
+      // No need to force a checkpoint, this is the first startup!
       waitCheckpointDone(backup);
     } catch(IOException e) {
       LOG.error("Error in TestBackupNode:", e);
@@ -144,8 +156,13 @@ public class TestBackupNode extends TestCase {
       if(fileSys != null) fileSys.close();
       if(cluster != null) cluster.shutdown();
     }
-    File imageFileNN = new File(BASE_DIR, "name1/current/fsimage");
-    File imageFileBN = new File(getBackupNodeDir(op, 1), "/current/fsimage");
+    // The checkpoint should have caused the NN to roll to edits_inprogress_2,
+    // and saved fsimage_2
+    File imageFileNN = new File(BASE_DIR, "name1/current/fsimage_2");
+    File imageFileBN = new File(getBackupNodeDir(op, 1), "/current/fsimage_2");
+    assertTrue(imageFileNN.exists());
+    assertTrue(imageFileBN.exists());
+    
     LOG.info("NameNode fsimage length = " + imageFileNN.length());
     LOG.info("Backup Node fsimage length = " + imageFileBN.length());
     assertTrue(imageFileNN.length() == imageFileBN.length());
@@ -163,11 +180,17 @@ public class TestBackupNode extends TestCase {
       // create new file file2
       writeFile(fileSys, file2, replication);
       checkFile(fileSys, file2, replication);
+      
+      // When we restarted the cluster it should have finalized
+      // edits_inprogress_2 and started edits_inprogress_3
+      assertNNFileExists("edits_2");
+      assertNNFileExists("edits_inprogress_3");
 
       //
       // Take a checkpoint
       //
       backup = startBackupNode(conf, op, 1);
+      backup.doCheckpoint();
       waitCheckpointDone(backup);
     } catch(IOException e) {
       LOG.error("Error in TestBackupNode:", e);
@@ -177,6 +200,13 @@ public class TestBackupNode extends TestCase {
       if(fileSys != null) fileSys.close();
       if(cluster != null) cluster.shutdown();
     }
+    
+    // This checkpoint should be fsimage_4
+    imageFileNN = new File(BASE_DIR, "name1/current/fsimage_4");
+    imageFileBN = new File(getBackupNodeDir(op, 1), "/current/fsimage_4");
+    assertTrue(imageFileNN.exists());
+    assertTrue(imageFileBN.exists());
+    
     LOG.info("NameNode fsimage length = " + imageFileNN.length());
     LOG.info("Backup Node fsimage length = " + imageFileBN.length());
     assertTrue(imageFileNN.length() == imageFileBN.length());
