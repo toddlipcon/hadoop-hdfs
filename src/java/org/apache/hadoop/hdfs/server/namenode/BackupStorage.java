@@ -40,6 +40,9 @@ public class BackupStorage extends FSImage {
 
   /** Backup input stream for loading edits into memory */
   private EditLogBackupInputStream backupInputStream;
+  
+  private final FSEditLogLoader logLoader;
+  
   /** Is journal spooling in progress */
   volatile JSpoolState jsState;
 
@@ -54,6 +57,7 @@ public class BackupStorage extends FSImage {
   BackupStorage() {
     super();
     jsState = JSpoolState.OFF;
+    logLoader = new FSEditLogLoader(this);
   }
 
   @Override
@@ -208,7 +212,7 @@ public class BackupStorage extends FSImage {
           waitSpoolEnd();
           // update NameSpace in memory
           backupInputStream.setBytes(data);
-          editLog.loadEditRecords(getLayoutVersion(),
+          logLoader.loadEditRecords(getLayoutVersion(),
                     backupInputStream.getDataInputStream(), true);
           getFSNamesystem().dir.updateCountForINodeWithQuota(); // inefficient!
           break;
@@ -328,11 +332,11 @@ public class BackupStorage extends FSImage {
       // load edits.new
       EditLogFileInputStream edits = new EditLogFileInputStream(jSpoolFile);
       DataInputStream in = edits.getDataInputStream();
-      numEdits += editLog.loadFSEdits(in, false);
+      numEdits += logLoader.loadFSEdits(in, false);
   
       // first time reached the end of spool
       jsState = JSpoolState.WAIT;
-      numEdits += editLog.loadEditRecords(getLayoutVersion(), in, true);
+      numEdits += logLoader.loadEditRecords(getLayoutVersion(), in, true);
       getFSNamesystem().dir.updateCountForINodeWithQuota();
       edits.close();
     }
