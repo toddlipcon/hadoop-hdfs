@@ -59,41 +59,44 @@ import org.apache.hadoop.security.token.delegation.DelegationKey;
  * 
  */
 public class FSEditLog {
-  public  static final byte OP_INVALID = -1;
-  private static final byte OP_ADD = 0;
-  private static final byte OP_RENAME_OLD = 1;  // rename
-  private static final byte OP_DELETE = 2;  // delete
-  private static final byte OP_MKDIR = 3;   // create directory
-  private static final byte OP_SET_REPLICATION = 4; // set replication
-  //the following two are used only for backward compatibility :
-  @Deprecated private static final byte OP_DATANODE_ADD = 5;
-  @Deprecated private static final byte OP_DATANODE_REMOVE = 6;
-  private static final byte OP_SET_PERMISSIONS = 7;
-  private static final byte OP_SET_OWNER = 8;
-  private static final byte OP_CLOSE = 9;    // close after write
-  private static final byte OP_SET_GENSTAMP = 10;    // store genstamp
-  /* The following two are not used any more. Should be removed once
-   * LAST_UPGRADABLE_LAYOUT_VERSION is -17 or newer. */
-  private static final byte OP_SET_NS_QUOTA = 11; // set namespace quota
-  private static final byte OP_CLEAR_NS_QUOTA = 12; // clear namespace quota
-  private static final byte OP_TIMES = 13; // sets mod & access time on a file
-  private static final byte OP_SET_QUOTA = 14; // sets name and disk quotas.
-  private static final byte OP_RENAME = 15;  // new rename
-  private static final byte OP_CONCAT_DELETE = 16; // concat files.
-  private static final byte OP_SYMLINK = 17; // a symbolic link
-  private static final byte OP_GET_DELEGATION_TOKEN = 18; //new delegation token
-  private static final byte OP_RENEW_DELEGATION_TOKEN = 19; //renew delegation token
-  private static final byte OP_CANCEL_DELEGATION_TOKEN = 20; //cancel delegation token
-  private static final byte OP_UPDATE_MASTER_KEY = 21; //update master key
-
-  /* 
-   * The following operations are used to control remote edit log streams,
-   * and not logged into file streams.
-   */
-  static final byte OP_JSPOOL_START = // start journal spool
-                                    NamenodeProtocol.JA_JSPOOL_START;
-  static final byte OP_CHECKPOINT_TIME = // incr checkpoint time
-                                    NamenodeProtocol.JA_CHECKPOINT_TIME;
+  
+  abstract class Ops {
+    public  static final byte OP_INVALID = -1;
+    public static final byte OP_ADD = 0;
+    public static final byte OP_RENAME_OLD = 1;  // rename
+    public static final byte OP_DELETE = 2;  // delete
+    public static final byte OP_MKDIR = 3;   // create directory
+    public static final byte OP_SET_REPLICATION = 4; // set replication
+    //the following two are used only for backward compatibility :
+    @Deprecated public static final byte OP_DATANODE_ADD = 5;
+    @Deprecated public static final byte OP_DATANODE_REMOVE = 6;
+    public static final byte OP_SET_PERMISSIONS = 7;
+    public static final byte OP_SET_OWNER = 8;
+    public static final byte OP_CLOSE = 9;    // close after write
+    public static final byte OP_SET_GENSTAMP = 10;    // store genstamp
+    /* The following two are not used any more. Should be removed once
+     * LAST_UPGRADABLE_LAYOUT_VERSION is -17 or newer. */
+    public static final byte OP_SET_NS_QUOTA = 11; // set namespace quota
+    public static final byte OP_CLEAR_NS_QUOTA = 12; // clear namespace quota
+    public static final byte OP_TIMES = 13; // sets mod & access time on a file
+    public static final byte OP_SET_QUOTA = 14; // sets name and disk quotas.
+    public static final byte OP_RENAME = 15;  // new rename
+    public static final byte OP_CONCAT_DELETE = 16; // concat files.
+    public static final byte OP_SYMLINK = 17; // a symbolic link
+    public static final byte OP_GET_DELEGATION_TOKEN = 18; //new delegation token
+    public static final byte OP_RENEW_DELEGATION_TOKEN = 19; //renew delegation token
+    public static final byte OP_CANCEL_DELEGATION_TOKEN = 20; //cancel delegation token
+    public static final byte OP_UPDATE_MASTER_KEY = 21; //update master key
+  
+    /* 
+     * The following operations are used to control remote edit log streams,
+     * and not logged into file streams.
+     */
+    static final byte OP_JSPOOL_START = // start journal spool
+                                      NamenodeProtocol.JA_JSPOOL_START;
+    static final byte OP_CHECKPOINT_TIME = // incr checkpoint time
+                                      NamenodeProtocol.JA_CHECKPOINT_TIME;
+  }
 
   static final String NO_JOURNAL_STREAMS_WARNING = "!!! WARNING !!!" +
   		" File system changes are not persistent. No journal streams.";
@@ -441,7 +444,7 @@ public class FSEditLog {
         try {
           in.mark(1);
           opcode = in.readByte();
-          if (opcode == OP_INVALID) {
+          if (opcode == Ops.OP_INVALID) {
             in.reset(); // reset back to end of file if somebody reads it again
             break; // no more transactions
           }
@@ -450,8 +453,8 @@ public class FSEditLog {
         }
         numEdits++;
         switch (opcode) {
-        case OP_ADD:
-        case OP_CLOSE: {
+        case Ops.OP_ADD:
+        case Ops.OP_CLOSE: {
           // versions > 0 support per file replication
           // get name and replication
           int length = in.readInt();
@@ -473,7 +476,7 @@ public class FSEditLog {
             blockSize = readLong(in);
           }
           // get blocks
-          boolean isFileUnderConstruction = (opcode == OP_ADD);
+          boolean isFileUnderConstruction = (opcode == Ops.OP_ADD);
           BlockInfo blocks[] = 
             readBlocks(in, logVersion, isFileUnderConstruction, replication);
 
@@ -496,7 +499,7 @@ public class FSEditLog {
           }
 
           // clientname, clientMachine and block locations of last block.
-          if (opcode == OP_ADD && logVersion <= -12) {
+          if (opcode == Ops.OP_ADD && logVersion <= -12) {
             clientName = FSImage.readString(in);
             clientMachine = FSImage.readString(in);
             if (-13 <= logVersion) {
@@ -544,14 +547,14 @@ public class FSEditLog {
           }
           break;
         } 
-        case OP_SET_REPLICATION: {
+        case Ops.OP_SET_REPLICATION: {
           numOpSetRepl++;
           path = FSImage.readString(in);
           short replication = adjustReplication(readShort(in));
           fsDir.unprotectedSetReplication(path, replication, null);
           break;
         } 
-        case OP_CONCAT_DELETE: {
+        case Ops.OP_CONCAT_DELETE: {
           if (logVersion > -22) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -572,7 +575,7 @@ public class FSEditLog {
           fsDir.unprotectedConcat(trg, srcs);
           break;
         }
-        case OP_RENAME_OLD: {
+        case Ops.OP_RENAME_OLD: {
           numOpRenameOld++;
           int length = in.readInt();
           if (length != 3) {
@@ -587,7 +590,7 @@ public class FSEditLog {
           fsNamesys.changeLease(s, d, dinfo);
           break;
         }
-        case OP_DELETE: {
+        case Ops.OP_DELETE: {
           numOpDelete++;
           int length = in.readInt();
           if (length != 2) {
@@ -599,7 +602,7 @@ public class FSEditLog {
           fsDir.unprotectedDelete(path, timestamp);
           break;
         }
-        case OP_MKDIR: {
+        case Ops.OP_MKDIR: {
           numOpMkDir++;
           PermissionStatus permissions = fsNamesys.getUpgradePermission();
           int length = in.readInt();
@@ -624,27 +627,27 @@ public class FSEditLog {
           fsDir.unprotectedMkdir(path, permissions, timestamp);
           break;
         }
-        case OP_SET_GENSTAMP: {
+        case Ops.OP_SET_GENSTAMP: {
           numOpSetGenStamp++;
           long lw = in.readLong();
           fsNamesys.setGenerationStamp(lw);
           break;
         } 
-        case OP_DATANODE_ADD: {
+        case Ops.OP_DATANODE_ADD: {
           numOpOther++;
           FSImage.DatanodeImage nodeimage = new FSImage.DatanodeImage();
           nodeimage.readFields(in);
           //Datnodes are not persistent any more.
           break;
         }
-        case OP_DATANODE_REMOVE: {
+        case Ops.OP_DATANODE_REMOVE: {
           numOpOther++;
           DatanodeID nodeID = new DatanodeID();
           nodeID.readFields(in);
           //Datanodes are not persistent any more.
           break;
         }
-        case OP_SET_PERMISSIONS: {
+        case Ops.OP_SET_PERMISSIONS: {
           numOpSetPerm++;
           if (logVersion > -11)
             throw new IOException("Unexpected opcode " + opcode
@@ -653,7 +656,7 @@ public class FSEditLog {
               FSImage.readString(in), FsPermission.read(in));
           break;
         }
-        case OP_SET_OWNER: {
+        case Ops.OP_SET_OWNER: {
           numOpSetOwner++;
           if (logVersion > -11)
             throw new IOException("Unexpected opcode " + opcode
@@ -663,7 +666,7 @@ public class FSEditLog {
               FSImage.readString_EmptyAsNull(in));
           break;
         }
-        case OP_SET_NS_QUOTA: {
+        case Ops.OP_SET_NS_QUOTA: {
           if (logVersion > -16) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -673,7 +676,7 @@ public class FSEditLog {
                                     FSConstants.QUOTA_DONT_SET);
           break;
         }
-        case OP_CLEAR_NS_QUOTA: {
+        case Ops.OP_CLEAR_NS_QUOTA: {
           if (logVersion > -16) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -684,14 +687,14 @@ public class FSEditLog {
           break;
         }
 
-        case OP_SET_QUOTA:
+        case Ops.OP_SET_QUOTA:
           fsDir.unprotectedSetQuota(FSImage.readString(in),
                                     readLongWritable(in),
                                     readLongWritable(in));
                                       
           break;
 
-        case OP_TIMES: {
+        case Ops.OP_TIMES: {
           numOpTimes++;
           int length = in.readInt();
           if (length != 3) {
@@ -704,7 +707,7 @@ public class FSEditLog {
           fsDir.unprotectedSetTimes(path, mtime, atime, true);
           break;
         }
-        case OP_SYMLINK: {
+        case Ops.OP_SYMLINK: {
           numOpSymlink++;
           int length = in.readInt();
           if (length != 4) {
@@ -719,7 +722,7 @@ public class FSEditLog {
           fsDir.unprotectedSymlink(path, value, mtime, atime, perm);
           break;
         }
-        case OP_RENAME: {
+        case Ops.OP_RENAME: {
           if (logVersion > -21) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -739,7 +742,7 @@ public class FSEditLog {
           fsNamesys.changeLease(s, d, dinfo);
           break;
         }
-        case OP_GET_DELEGATION_TOKEN: {
+        case Ops.OP_GET_DELEGATION_TOKEN: {
           if (logVersion > -24) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -753,7 +756,7 @@ public class FSEditLog {
               .addPersistedDelegationToken(delegationTokenId, expiryTime);
           break;
         }
-        case OP_RENEW_DELEGATION_TOKEN: {
+        case Ops.OP_RENEW_DELEGATION_TOKEN: {
           if (logVersion > -24) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -767,7 +770,7 @@ public class FSEditLog {
               .updatePersistedTokenRenewal(delegationTokenId, expiryTime);
           break;
         }
-        case OP_CANCEL_DELEGATION_TOKEN: {
+        case Ops.OP_CANCEL_DELEGATION_TOKEN: {
           if (logVersion > -24) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -780,7 +783,7 @@ public class FSEditLog {
               .updatePersistedTokenCancellation(delegationTokenId);
           break;
         }
-        case OP_UPDATE_MASTER_KEY: {
+        case Ops.OP_UPDATE_MASTER_KEY: {
           if (logVersion > -24) {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
@@ -1056,7 +1059,7 @@ public class FSEditLog {
       FSEditLog.toLogLong(newNode.getModificationTime()),
       FSEditLog.toLogLong(newNode.getAccessTime()),
       FSEditLog.toLogLong(newNode.getPreferredBlockSize())};
-    logEdit(OP_ADD,
+    logEdit(Ops.OP_ADD,
             new ArrayWritable(DeprecatedUTF8.class, nameReplicationPair), 
             new ArrayWritable(Block.class, newNode.getBlocks()),
             newNode.getPermissionStatus(),
@@ -1074,7 +1077,7 @@ public class FSEditLog {
       FSEditLog.toLogLong(newNode.getModificationTime()),
       FSEditLog.toLogLong(newNode.getAccessTime()),
       FSEditLog.toLogLong(newNode.getPreferredBlockSize())};
-    logEdit(OP_CLOSE,
+    logEdit(Ops.OP_CLOSE,
             new ArrayWritable(DeprecatedUTF8.class, nameReplicationPair),
             new ArrayWritable(Block.class, newNode.getBlocks()),
             newNode.getPermissionStatus());
@@ -1089,7 +1092,7 @@ public class FSEditLog {
       FSEditLog.toLogLong(newNode.getModificationTime()),
       FSEditLog.toLogLong(newNode.getAccessTime())
     };
-    logEdit(OP_MKDIR, new ArrayWritable(DeprecatedUTF8.class, info),
+    logEdit(Ops.OP_MKDIR, new ArrayWritable(DeprecatedUTF8.class, info),
         newNode.getPermissionStatus());
   }
   
@@ -1102,7 +1105,7 @@ public class FSEditLog {
       new DeprecatedUTF8(src),
       new DeprecatedUTF8(dst),
       FSEditLog.toLogLong(timestamp)};
-    logEdit(OP_RENAME_OLD, new ArrayWritable(DeprecatedUTF8.class, info));
+    logEdit(Ops.OP_RENAME_OLD, new ArrayWritable(DeprecatedUTF8.class, info));
   }
   
   /** 
@@ -1113,7 +1116,7 @@ public class FSEditLog {
       new DeprecatedUTF8(src),
       new DeprecatedUTF8(dst),
       FSEditLog.toLogLong(timestamp)};
-    logEdit(OP_RENAME, new ArrayWritable(DeprecatedUTF8.class, info),
+    logEdit(Ops.OP_RENAME, new ArrayWritable(DeprecatedUTF8.class, info),
         toBytesWritable(options));
   }
   
@@ -1121,7 +1124,7 @@ public class FSEditLog {
    * Add set replication record to edit log
    */
   void logSetReplication(String src, short replication) {
-    logEdit(OP_SET_REPLICATION, 
+    logEdit(Ops.OP_SET_REPLICATION, 
             new DeprecatedUTF8(src), 
             FSEditLog.toLogReplication(replication));
   }
@@ -1132,20 +1135,20 @@ public class FSEditLog {
    * @param quota the directory size limit
    */
   void logSetQuota(String src, long nsQuota, long dsQuota) {
-    logEdit(OP_SET_QUOTA, new DeprecatedUTF8(src), 
+    logEdit(Ops.OP_SET_QUOTA, new DeprecatedUTF8(src), 
             new LongWritable(nsQuota), new LongWritable(dsQuota));
   }
 
   /**  Add set permissions record to edit log */
   void logSetPermissions(String src, FsPermission permissions) {
-    logEdit(OP_SET_PERMISSIONS, new DeprecatedUTF8(src), permissions);
+    logEdit(Ops.OP_SET_PERMISSIONS, new DeprecatedUTF8(src), permissions);
   }
 
   /**  Add set owner record to edit log */
   void logSetOwner(String src, String username, String groupname) {
     DeprecatedUTF8 u = new DeprecatedUTF8(username == null? "": username);
     DeprecatedUTF8 g = new DeprecatedUTF8(groupname == null? "": groupname);
-    logEdit(OP_SET_OWNER, new DeprecatedUTF8(src), u, g);
+    logEdit(Ops.OP_SET_OWNER, new DeprecatedUTF8(src), u, g);
   }
   
   /**
@@ -1160,7 +1163,7 @@ public class FSEditLog {
       info[idx++] = new DeprecatedUTF8(srcs[i]);
     }
     info[idx] = FSEditLog.toLogLong(timestamp);
-    logEdit(OP_CONCAT_DELETE, new ArrayWritable(DeprecatedUTF8.class, info));
+    logEdit(Ops.OP_CONCAT_DELETE, new ArrayWritable(DeprecatedUTF8.class, info));
   }
   
   /** 
@@ -1170,14 +1173,14 @@ public class FSEditLog {
     DeprecatedUTF8 info[] = new DeprecatedUTF8[] { 
       new DeprecatedUTF8(src),
       FSEditLog.toLogLong(timestamp)};
-    logEdit(OP_DELETE, new ArrayWritable(DeprecatedUTF8.class, info));
+    logEdit(Ops.OP_DELETE, new ArrayWritable(DeprecatedUTF8.class, info));
   }
 
   /** 
    * Add generation stamp record to edit log
    */
   void logGenerationStamp(long genstamp) {
-    logEdit(OP_SET_GENSTAMP, new LongWritable(genstamp));
+    logEdit(Ops.OP_SET_GENSTAMP, new LongWritable(genstamp));
   }
 
   /** 
@@ -1188,7 +1191,7 @@ public class FSEditLog {
       new DeprecatedUTF8(src),
       FSEditLog.toLogLong(mtime),
       FSEditLog.toLogLong(atime)};
-    logEdit(OP_TIMES, new ArrayWritable(DeprecatedUTF8.class, info));
+    logEdit(Ops.OP_TIMES, new ArrayWritable(DeprecatedUTF8.class, info));
   }
 
   /** 
@@ -1201,7 +1204,7 @@ public class FSEditLog {
       new DeprecatedUTF8(value),
       FSEditLog.toLogLong(mtime),
       FSEditLog.toLogLong(atime)};
-    logEdit(OP_SYMLINK, 
+    logEdit(Ops.OP_SYMLINK, 
             new ArrayWritable(DeprecatedUTF8.class, info),
             node.getPermissionStatus());
   }
@@ -1214,20 +1217,20 @@ public class FSEditLog {
    */
   void logGetDelegationToken(DelegationTokenIdentifier id,
       long expiryTime) {
-    logEdit(OP_GET_DELEGATION_TOKEN, id, FSEditLog.toLogLong(expiryTime));
+    logEdit(Ops.OP_GET_DELEGATION_TOKEN, id, FSEditLog.toLogLong(expiryTime));
   }
   
   void logRenewDelegationToken(DelegationTokenIdentifier id,
       long expiryTime) {
-    logEdit(OP_RENEW_DELEGATION_TOKEN, id, FSEditLog.toLogLong(expiryTime));
+    logEdit(Ops.OP_RENEW_DELEGATION_TOKEN, id, FSEditLog.toLogLong(expiryTime));
   }
   
   void logCancelDelegationToken(DelegationTokenIdentifier id) {
-    logEdit(OP_CANCEL_DELEGATION_TOKEN, id);
+    logEdit(Ops.OP_CANCEL_DELEGATION_TOKEN, id);
   }
   
   void logUpdateMasterKey(DelegationKey key) {
-    logEdit(OP_UPDATE_MASTER_KEY, key);
+    logEdit(Ops.OP_UPDATE_MASTER_KEY, key);
   }
   
   static private DeprecatedUTF8 toLogReplication(short replication) {
@@ -1554,7 +1557,7 @@ public class FSEditLog {
       boStream = new EditLogBackupOutputStream(bnReg, nnReg);
       editStreams.add(boStream);
     }
-    logEdit(OP_JSPOOL_START, (Writable[])null);
+    logEdit(Ops.OP_JSPOOL_START, (Writable[])null);
   }
 
   /**
@@ -1652,7 +1655,7 @@ public class FSEditLog {
   void incrementCheckpointTime() {
     fsimage.incrementCheckpointTime();
     Writable[] args = {new LongWritable(fsimage.getCheckpointTime())};
-    logEdit(OP_CHECKPOINT_TIME, args);
+    logEdit(Ops.OP_CHECKPOINT_TIME, args);
   }
 
   synchronized void releaseBackupStream(NamenodeRegistration registration) {
