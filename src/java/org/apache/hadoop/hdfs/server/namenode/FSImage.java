@@ -860,7 +860,7 @@ public class FSImage extends Storage {
     FSImageStorageInspector inspector = inspectStorage();
     isUpgradeFinalized = inspector.isUpgradeFinalized();
     int lastImageIndex = inspector.getLatestImageIndex();
-    int lastLogIndex = inspector.getLatestEditsIndex();
+    int lastLogIndex = inspector.getLatestEditsIndex(true /* include inprogress */);
   
     // Recover any logs that may have been in progress during
     // the shutdown
@@ -1222,6 +1222,7 @@ public class FSImage extends Storage {
     }
     rollFSImage(imageIndex);
     mostRecentSavedImageIndex = imageIndex;
+    writeVersionFiles();
   }
 
   /**

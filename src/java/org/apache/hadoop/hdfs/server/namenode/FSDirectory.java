@@ -108,7 +108,7 @@ class FSDirectory implements Closeable {
     }
     try {
       if (fsImage.recoverTransitionRead(dataDirs, editsDirs, startOpt)) {
-        fsImage.saveFSImage(false /* dont roll TODO explain*/);
+        fsImage.saveFSImage();
       }
       fsImage.openLogs();
       FSEditLog editLog = fsImage.getEditLog();

@@ -23,6 +23,7 @@ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeFile;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.File;
 import java.util.regex.Matcher;
@@ -46,9 +47,10 @@ class FSImageStorageInspector {
 
   boolean needToSave = false;
   private boolean isUpgradeFinalized = true;
-
-  TreeSet<CandidateFile> imageCandidates = new TreeSet<CandidateFile>(ROLL_IDX_COMPARATOR);
-  TreeSet<CandidateFile> editsCandidates = new TreeSet<CandidateFile>(ROLL_IDX_COMPARATOR);
+  
+  int latestImageIndex = -1;
+  int latestEditsIndex = -1;
+  int latestInProgressEditsIndex = -1;
 
   private static final Pattern IMAGE_REGEX = Pattern.compile(
     NameNodeFile.IMAGE.getName() + "_(\\d+)");
@@ -64,6 +66,7 @@ class FSImageStorageInspector {
   void inspectDirectory(StorageDirectory sd) throws IOException {
     // Was the file just formatted?
     if (!sd.getVersionFile().exists()) {
+      LOG.info("No version file in " + sd.getRoot());
       needToSave |= true;
       return;
     }
@@ -87,80 +90,52 @@ class FSImageStorageInspector {
     return isUpgradeFinalized;
   }
   
-  int getLatestImageIndex() {
-    CandidateFile lastImage = imageCandidates.last();
-    return lastImage.rollIndex; // TODO check null
-  }
-
-  File getLatestImageFile() {
-    return imageCandidates.last().file;
-  }
-  
-  int getLatestEditsIndex() {
-    if (editsCandidates.isEmpty()) {
-      return getLatestImageIndex() - 1;
+  int getLatestImageIndex() throws FileNotFoundException {
+    if (latestImageIndex == -1) {
+      throw new FileNotFoundException("No image files found");
     }
-    CandidateFile lastLog = editsCandidates.last();
-    return lastLog.rollIndex;
+    return latestImageIndex;
   }
-
-  File getLatestEditsFile() {
-    return editsCandidates.last().file;
-  }
-
   
+  int getLatestEditsIndex(boolean includeInProgress)
+    throws FileNotFoundException {
+    int ret;
+    if (includeInProgress) {
+      ret = Math.max(latestInProgressEditsIndex,
+          latestEditsIndex);
+    } else {
+      ret = latestEditsIndex;
+    }
+    if (ret == -1) {
+      throw new FileNotFoundException("No edits found");
+    }
+    return ret;
+  }
+
   void inspectEditsDir(File dir) throws IOException {
-    findCandidates(dir, EDITS_REGEX, editsCandidates);
-    findCandidates(dir, EDITS_INPROGRESS_REGEX, editsCandidates);
+    latestEditsIndex = Math.max(latestEditsIndex,
+        findLatestCandidate(dir, EDITS_REGEX));
+    latestInProgressEditsIndex = Math.max(latestInProgressEditsIndex,
+        findLatestCandidate(dir, EDITS_INPROGRESS_REGEX));
   }
   
   void inspectImageDir(File dir) throws IOException {
-    findCandidates(dir, IMAGE_REGEX, imageCandidates);
+    latestImageIndex = Math.max(latestImageIndex,
+        findLatestCandidate(dir, IMAGE_REGEX));
   }
   
   
 
-  private void findCandidates(
-    File currentDir, Pattern regex, Collection<CandidateFile> candidates)
-    throws IOException
-  {
+  private int findLatestCandidate(File currentDir, Pattern regex)
+    throws IOException {
+    int max = -1;
     for (File f : currentDir.listFiles()) {
       Matcher m = regex.matcher(f.getName());
       if (m.matches()) {
         int fileIndex = Integer.parseInt(m.group(1));
-        candidates.add(new CandidateFile(f, fileIndex));
+        max = Math.max(max, fileIndex);
       }
     }
-  }
-
-  /**
-   * A particular metadata file within a storage directory
-   */
-  private static class CandidateFile {
-    File file;
-    int rollIndex;
-
-    public CandidateFile(File file, int rollIndex) {
-      this.file = file;
-      this.rollIndex = rollIndex;
-    }
-
-    public String toString() {
-      return "CandidateFile(file=" + file + ", index=" + rollIndex + ")";
-    }
-  }
-
-  private static final Comparator<CandidateFile> ROLL_IDX_COMPARATOR =
-    new CompareByRollIndex();
-
-  private static class CompareByRollIndex implements Comparator<CandidateFile> {
-    public int compare(CandidateFile a, CandidateFile b) {
-      if (a.rollIndex < b.rollIndex)
-        return -1;
-      else if (a.rollIndex == b.rollIndex)
-        return 0;
-      else
-        return 1;
-    }
+    return max;
   }
 }

@@ -161,7 +161,11 @@ public class TestStartup extends TestCase {
     inspector.inspectEditsDir(new File(editsDir, "current"));
     
     // get name dir and its length, then delete and recreate the directory
-    this.fsimageLength = inspector.getLatestImageFile().length();
+    File imf = new File(new File(nameDir, "current"),
+        FSImage.getImageFileName(NameNodeFile.IMAGE,
+            inspector.getLatestImageIndex()));
+    LOG.info("Marking image length for image file " + imf);
+    this.fsimageLength = imf.length();
     
     if(nameDir.exists() && !(FileUtil.fullyDelete(nameDir)))
       throw new IOException("Cannot remove directory: " + nameDir);
@@ -171,7 +175,11 @@ public class TestStartup extends TestCase {
     if (!nameDir.mkdirs())
       throw new IOException("Cannot create directory " + nameDir);
 
-    this.editsLength = inspector.getLatestEditsFile().length();
+    File edf = new File(new File(nameDir, "current"),
+        FSImage.getImageFileName(NameNodeFile.EDITS,
+            inspector.getLatestEditsIndex(false)));
+    LOG.info("Marking edit length for edits file " + edf);
+    this.editsLength = edf.length();
     
     if(editsDir.exists() && !(FileUtil.fullyDelete(editsDir)))
       throw new IOException("Cannot remove directory: " + editsDir);
@@ -198,31 +206,39 @@ public class TestStartup extends TestCase {
       assertNotNull(nn);	
       // Verify that image file sizes did not change.
       FSImage image = nn.getFSImage();
-      verifyDifferentDirs(image, this.fsimageLength, this.editsLength);
+      verifyImageSize(image, this.fsimageLength); // TODO verify index
+      verifyDifferentDirs(image);
     } finally {
       if(cluster != null)
         cluster.shutdown();
     }
   }
 
-  /**
-   * verify that edits log and fsimage are in different directories and of a correct size
-   */
-  private void verifyDifferentDirs(FSImage img, long expectedImgSize, long expectedEditsSize)
+  private void verifyEditsSize(FSImage img, long expectedEditsSize)
     throws IOException {
-    FSImageStorageInspector inspector = new FSImageStorageInspector();
-    StorageDirectory sd =null;
-    for (Iterator<StorageDirectory> it = img.dirIterator(); it.hasNext();) {
-      sd = it.next();
-      inspector.inspectDirectory(sd);
-    }
+    FSImageStorageInspector inspector = img.inspectStorage();
 
-    File latestImage = inspector.getLatestImageFile();
-    File latestEdits = inspector.getLatestEditsFile();
-    assertEquals(expectedImgSize, latestImage.length());
-    assertEquals(expectedEditsSize, latestEdits.length());
+    File latestEdits = img.getFirstReadableEditsFile(
+        inspector.getLatestEditsIndex(false));
+    assertEquals(expectedEditsSize, latestEdits.length());    
+  }
 
-    assertFalse(latestImage.getParent().equals(latestEdits.getParent()));
+  private void verifyImageSize(FSImage img, long expectedImgSize)
+  throws IOException {
+    FSImageStorageInspector inspector = img.inspectStorage();
+
+    File latestImage = img.getFirstReadableFsImageFile(
+        inspector.getLatestImageIndex());
+    assertEquals(expectedImgSize, latestImage.length());    
+  }
+  
+  /**
+   * Make sure that we only have edits in edits dirs
+   * and only images in image dirs.
+   */
+  private void verifyDifferentDirs(FSImage img)
+    throws IOException {
+    // TODO implement me
   }
   /**
    * secnn-6
@@ -320,15 +336,19 @@ public class TestStartup extends TestCase {
       assertEquals(sd.getStorageDirType(), NameNodeDirType.IMAGE_AND_EDITS);
       FSImageStorageInspector inspector = image.inspectStorage();
       
-      File imf = inspector.getLatestImageFile();
-      File edf = inspector.getLatestEditsFile();
+      File imf = image.getFirstReadableFsImageFile(
+          inspector.getLatestImageIndex());
+      File edf = image.getFirstReadableEditsFile(
+          inspector.getLatestEditsIndex(false)); // last finalized edit
       
       LOG.info("--image file " + imf.getAbsolutePath() + "; len = " + imf.length());
       LOG.info("--edits file " + edf.getAbsolutePath() + "; len = " + edf.length());
       assertEquals(imf.getParent(), edf.getParent());
       
       FSImage chkpImage = sn.getFSImage();
-      verifyDifferentDirs(chkpImage, imf.length(), edf.length());
+      
+      verifyEditsSize(chkpImage, edf.length());
+      verifyImageSize(chkpImage, imf.length());
 
     } catch (IOException e) {
       fail(StringUtils.stringifyException(e));
