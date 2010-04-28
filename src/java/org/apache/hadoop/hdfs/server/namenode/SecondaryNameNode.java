@@ -623,7 +623,8 @@ public class SecondaryNameNode implements Runnable {
       namesystemReflectsLogsThrough = sig.newestFinalizedEditLogIndex;
 
       sig.validateStorageInfo(this);
-      saveFSImage(false);
+      saveFSImage(namesystemReflectsLogsThrough + 1);
+      namesystemReflectsLogsThrough++;
     }
   }
 }

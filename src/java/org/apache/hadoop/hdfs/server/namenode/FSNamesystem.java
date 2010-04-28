@@ -3122,7 +3122,7 @@ public class FSNamesystem implements FSConstants, FSNamesystemMBean, FSClusterSt
       throw new IOException("Safe mode should be turned ON " +
                             "in order to create namespace image.");
     }
-    getFSImage().saveFSImage(true);
+    getFSImage().saveFSImage();
     LOG.info("New namespace image has been created.");
   }
   

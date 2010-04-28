@@ -136,22 +136,6 @@ public class FSEditLog {
     lastPrintTime = FSNamesystem.now();
     currentLogIndex = logIndex;
   }
-  
-  private static File getFinalizedEditsFile(StorageDirectory sd, int index) {
-    return FSImage.getFinalizedEditsFile(sd, index);
-  }
-
-  private static File getInProgressEditsFile(StorageDirectory sd, int index) {
-    return FSImage.getInProgressEditsFile(sd, index);
-  }
-
-  static boolean existsFinalizedEditsFile(StorageDirectory sd, int index) {
-    return getFinalizedEditsFile(sd, index).exists(); 
-  }
-
-  static boolean existsInProgressEditsFile(StorageDirectory sd, int index) {
-    return getInProgressEditsFile(sd, index).exists(); 
-  }
 
 
   private int getNumEditsDirs() {
@@ -219,13 +203,13 @@ public class FSEditLog {
         "new edit index " + index);
     }
 
-    File eFile = getInProgressEditsFile(sd, index);
-    if (existsInProgressEditsFile(sd, index)) {
+    File eFile = FSImage.getInProgressEditsFile(sd, index);
+    if (eFile.exists()) {
       throw new IOException("Cannot create inprogress file with index " +
                             index + " in " + sd + " since inprogress file " +
                             "already exists");
     }
-    if (existsFinalizedEditsFile(sd, index)) {
+    if (FSImage.existsFinalizedEditsFile(sd, index)) {
       throw new IOException("Cannot create inprogress file with index " +
                             index + " in " + sd + " since finalized file " +
                             "already exists");
@@ -246,7 +230,6 @@ public class FSEditLog {
    */
   synchronized void addBackupStream(
       NamenodeRegistration bnReg, NamenodeRegistration nnReg) throws IOException {
-    // TODO check that we don't already have one, perhaps?
     EditLogOutputStream boStream = new EditLogBackupOutputStream(bnReg, nnReg);
     editStreams.add(boStream);
   }
@@ -820,7 +803,7 @@ public class FSEditLog {
     boolean gotValid = false;
     while(it.hasNext()) {
       StorageDirectory sd = it.next();
-      File f = getFinalizedEditsFile(sd, logIndex);
+      File f = FSImage.getFinalizedEditsFile(sd, logIndex);
       if (f.exists()) {
         long curSize = f.length();
         assert (size == 0 || size == curSize || curSize ==0) :
@@ -867,7 +850,7 @@ public class FSEditLog {
    * @param expectedNewIndex the index to roll to - used as a safeguard
    * that the image agrees with the edit log about current index
    */
-  synchronized int rollEditLog(int expectedNewIndex) throws IOException {
+  synchronized void rollEditLog(int expectedNewIndex) throws IOException {
     waitForSyncToFinish();
     Iterator<StorageDirectory> it = fsimage.dirIterator(NameNodeDirType.EDITS);
     if(!it.hasNext()) 
@@ -885,16 +868,16 @@ public class FSEditLog {
     while(it.hasNext()) {
       StorageDirectory sd = it.next();
       // Current finalized file should not exist
-      if (existsFinalizedEditsFile(sd, currentLogIndex)) {
-        throw new IOException(getFinalizedEditsFile(sd, currentLogIndex) + "should not exist");
+      if (FSImage.existsFinalizedEditsFile(sd, currentLogIndex)) {
+        throw new IOException(FSImage.getFinalizedEditsFile(sd, currentLogIndex) + "should not exist");
       }
       // New finalized file should not exist
-      if (existsFinalizedEditsFile(sd, nextIndex)) {
-        throw new IOException(getFinalizedEditsFile(sd, nextIndex) + "should not exist");
+      if (FSImage.existsFinalizedEditsFile(sd, nextIndex)) {
+        throw new IOException(FSImage.getFinalizedEditsFile(sd, nextIndex) + "should not exist");
       }
       // New in progress file should not exist
-      if (existsInProgressEditsFile(sd, nextIndex)) {
-        throw new IOException(getInProgressEditsFile(sd, nextIndex) + "should not exist");
+      if (FSImage.existsInProgressEditsFile(sd, nextIndex)) {
+        throw new IOException(FSImage.getInProgressEditsFile(sd, nextIndex) + "should not exist");
       }
     }
 
@@ -904,7 +887,6 @@ public class FSEditLog {
     FSImage.LOG.info("====> Telling slaves that we rolled our logs to " + nextIndex);
     logEdit(Ops.OP_ROLL_LOGS, new IntWritable(nextIndex));
     currentLogIndex = nextIndex;
-    return nextIndex; // TODO maybe dont need this, need to look at context of calls
   }
 
   /**
@@ -931,8 +913,8 @@ public class FSEditLog {
       while (it.hasNext()) {
         StorageDirectory sd = it.next();
 
-        boolean thisDirHasFinalized = existsFinalizedEditsFile(sd, i);
-        boolean thisDirHasInProgress = existsInProgressEditsFile(sd, i);
+        boolean thisDirHasFinalized = FSImage.existsFinalizedEditsFile(sd, i);
+        boolean thisDirHasInProgress = FSImage.existsInProgressEditsFile(sd, i);
 
         // Sanity check that we have one or the other but not both
         if (thisDirHasFinalized && thisDirHasInProgress) {
@@ -953,7 +935,7 @@ public class FSEditLog {
         it = fsimage.dirIterator(NameNodeDirType.EDITS);
         while (it.hasNext()) {
           StorageDirectory sd = it.next();
-          if (existsInProgressEditsFile(sd, i)) {
+          if (FSImage.existsInProgressEditsFile(sd, i)) {
             markPossiblyCorruptInProgressEditsFile(sd, i);
           }
         }
@@ -967,7 +949,7 @@ public class FSEditLog {
         it = fsimage.dirIterator(NameNodeDirType.EDITS);
         while (it.hasNext()) {
           StorageDirectory sd = it.next();
-          if (existsInProgressEditsFile(sd, i)) {
+          if (FSImage.existsInProgressEditsFile(sd, i)) {
             finalizeEditsFile(sd, i);
           }
         }
@@ -989,7 +971,7 @@ public class FSEditLog {
    */
   private static void markPossiblyCorruptInProgressEditsFile(StorageDirectory sd, int index)
     throws IOException {
-    File f = getFinalizedEditsFile(sd, index);
+    File f = FSImage.getFinalizedEditsFile(sd, index);
     FSImage.LOG.warn("Marking possibly corrupt edits file " + f);
 
     Storage.rename(f, new File(f.getParentFile(), f.getName() + ".corrupt"));
@@ -1000,8 +982,8 @@ public class FSEditLog {
     throws IOException
   {
     FSImage.LOG.info("Finalizing edits file #" + index + " in " + sd.getRoot());
-    File inProgressFile = getInProgressEditsFile(sd, index);
-    File finalizedFile = getFinalizedEditsFile(sd, index);
+    File inProgressFile = FSImage.getInProgressEditsFile(sd, index);
+    File finalizedFile = FSImage.getFinalizedEditsFile(sd, index);
 
     if (finalizedFile.exists()) {
       throw new IOException(
@@ -1078,7 +1060,7 @@ public class FSEditLog {
 
         // create new stream
         eStream = new EditLogFileOutputStream(
-          getInProgressEditsFile(sd, oldIndex + 1),
+          FSImage.getInProgressEditsFile(sd, oldIndex + 1),
           sizeOutputFlushBuffer);
         eStream.create();
         // replace by the new stream

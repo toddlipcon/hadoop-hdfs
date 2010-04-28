@@ -25,6 +25,7 @@ import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -62,6 +63,7 @@ import org.apache.hadoop.hdfs.server.common.HdfsConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.NodeType;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.StartupOption;
+import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.JournalStream.JournalType;
 import org.apache.hadoop.hdfs.server.protocol.CheckpointCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
@@ -298,18 +300,34 @@ public class FSImage extends Storage {
     return new File(sd.getCurrentDir(), getImageFileName(type, index));
   }
   
+  /**
+   * Return the first readable image file with the given index from one of the
+   * storage directories.
+   * 
+   * @throws IOException if there are no readable images with this index.
+   */
   File getFirstReadableFsImageFile(int index) throws IOException {
     return getFirstReadableFile(NameNodeDirType.IMAGE,
                                 NameNodeFile.IMAGE,
                                 index);
   }
   
+  /**
+   * Return the first readable finalized edit file with the given index from one
+   * of the storage directories.
+   * 
+   * @throws IOException if there are no readable logs with this index.
+   */
   File getFirstReadableEditsFile(int index) throws IOException {
     return getFirstReadableFile(NameNodeDirType.EDITS,
                                 NameNodeFile.EDITS,
                                 index);
   }
   
+  /**
+   * Get the destination paths for a checkpoint upload of the given
+   * index. This returns an fsimage.ckpt_N in each of the directories.
+   */
   public File[] getImageCheckpointFiles(int index) throws IOException {
     ArrayList<File> list = new ArrayList<File>();
     for (Iterator<StorageDirectory> it = 
@@ -319,9 +337,12 @@ public class FSImage extends Storage {
     return list.toArray(new File[list.size()]);
   }
   
+  /**
+   * Return the first readable file of the given type with the given index.
+   * @throws IOException if no such files are found, or there was an error.
+   */
   protected File getFirstReadableFile(NameNodeDirType dirType, NameNodeFile fileType,
-                                    int index)
-    throws IOException
+      int index) throws IOException
   {
     StorageDirectory sd = null;
     for (Iterator<StorageDirectory> it = dirIterator(dirType); it.hasNext();) {
@@ -329,7 +350,8 @@ public class FSImage extends Storage {
       if(sd.getRoot().canRead())
         return getImageFile(sd, fileType, index);
     }
-    return null;
+    throw new FileNotFoundException("No " + fileType + " found in any of the "
+        + dirType + " dirs with index " + index);
   }
   
   List<StorageDirectory> getRemovedStorageDirs() {
@@ -337,11 +359,19 @@ public class FSImage extends Storage {
   }
   
   static File getFinalizedEditsFile(StorageDirectory sd, int index) {
-    return getImageFile(sd, NameNodeFile.EDITS, index); // TODO these functions are an extra indirection
+    return getImageFile(sd, NameNodeFile.EDITS, index);
   }
   
   static File getInProgressEditsFile(StorageDirectory sd, int index) {
     return getImageFile(sd, NameNodeFile.EDITS_INPROGRESS, index);
+  }
+  
+  static boolean existsFinalizedEditsFile(StorageDirectory sd, int index) {
+    return getFinalizedEditsFile(sd, index).exists(); 
+  }
+
+  static boolean existsInProgressEditsFile(StorageDirectory sd, int index) {
+    return getInProgressEditsFile(sd, index).exists(); 
   }
   
   Collection<File> getFiles(NameNodeFile type, NameNodeDirType dirType, int index) {
@@ -851,8 +881,9 @@ public class FSImage extends Storage {
   
     boolean needToSave = inspector.needToSave;
   
-    // set our storage info from this particular storage directory
-    // TODO this is a little ugly
+    // Set our storage info from this particular storage directory.
+    // The image file is in storagedir/current/fsimage, so go up
+    // two levels to find storagedir.
     new StorageDirectory(imageToLoad.getParentFile().getParentFile()).read();
   
     needToSave |= loadFSImage(imageToLoad);
@@ -861,28 +892,45 @@ public class FSImage extends Storage {
     LOG.info("Image file of size " + imageSize + " loaded in " 
         + (FSNamesystem.now() - startTime)/1000 + " seconds.");    
   
-    // Load latest edits
+    // Load all of the edits between the loaded image and the latest.
     List<File> editsToLoad = new ArrayList<File>();
     for (int i = lastImageIndex; i <= lastLogIndex; i++) {
       editsToLoad.add(getFirstReadableEditsFile(i));     
     }
     needToSave |= (loadFSEdits(editsToLoad) > 0);
     
+    // We now reflect the logs all the way through the last log we loaded.
     namesystemReflectsLogsThrough = lastLogIndex;
     return needToSave;
   }
   
-  void openLogs() throws IOException {
+  /**
+   * Open the logs up for writing.
+   * This should only be called once, after the image has been fully
+   * loaded.
+   * @throws IOException if the logs are already open, or the logs cannot
+   *   be opened.
+   */
+  synchronized void openLogs() throws IOException {
     if (editLog != null) {
       throw new IOException("Logs already open!");
     }
-    LOG.info("Opening log #" + (namesystemReflectsLogsThrough + 1));
-    // TODO good comment here
-    editLog = new FSEditLog(this, namesystemReflectsLogsThrough + 1);
-    editLog.openNewLogs(namesystemReflectsLogsThrough + 1);
-    namesystemReflectsLogsThrough++;
+    // Since this is called after loading, we should have finalized
+    // the file for index namesystemReflectsLogsThrough, so open
+    // the next one.
+    int toOpen = namesystemReflectsLogsThrough + 1;
+    LOG.info("Opening log #" + toOpen);
+    editLog = new FSEditLog(this, toOpen);
+    editLog.openNewLogs(toOpen);
+    // Only increment this variable once we've successfully opened.
+    // TODO write test for what happens with startup when one storage dir is bad. 
+    namesystemReflectsLogsThrough = toOpen;
   }
   
+  /**
+   * Run an FSImageStorageInspector across all the storage in this image.
+   * This determines which image and edits should be loaded.
+   */
   FSImageStorageInspector inspectStorage() throws IOException {
     FSImageStorageInspector inspector = new FSImageStorageInspector();
   
@@ -893,6 +941,7 @@ public class FSImage extends Storage {
       inspector.inspectDirectory(sd);
     }
     
+    // TODO test startup with a bad storage dir
     return inspector;
   }
 
@@ -1083,11 +1132,12 @@ public class FSImage extends Storage {
   }
 
   /**
-   * Load and merge edits from two edits files
+   * Load edits from a set of files.
    * 
-   * @param sd storage directory
+   * @param editsFiles the list of files to load. 
    * @return number of edits loaded
-   * @throws IOException
+   * 
+   * TODO would be nice to move this function to EditLogLoader
    */
   int loadFSEdits(List<File> editsFiles) throws IOException {
 
@@ -1142,24 +1192,18 @@ public class FSImage extends Storage {
              (FSNamesystem.now() - startTime)/1000 + " seconds.");
   }
   
+  /**
+   * Save the current namesystem to the image file in each of the
+   * storage directories.
+   */
   public void saveFSImage() throws IOException {
-    saveFSImage(true);
-  }
-
-  // TODO clean up these interfaces
-  public void saveFSImage(boolean rollLogsFirst) throws IOException {
-    // If we're already writing an edit log, roll ahead.
-    int imageIndexToSave = namesystemReflectsLogsThrough + 1;
-    if (rollLogsFirst) {
-      LOG.info("Rolling edits log in saveFSImage to " + imageIndexToSave);
-      editLog.rollEditLog(imageIndexToSave);
-      saveFSImage(imageIndexToSave);
-      namesystemReflectsLogsThrough = imageIndexToSave;
-    } else {
-      saveFSImage(imageIndexToSave);
-    }
     // fsimage_N means we have data from all the logs up to but not including
     // N
+    int imageIndexToSave = namesystemReflectsLogsThrough + 1;
+    LOG.info("Rolling edits log in saveFSImage to " + imageIndexToSave);
+    editLog.rollEditLog(imageIndexToSave);
+    saveFSImage(imageIndexToSave);
+    namesystemReflectsLogsThrough = imageIndexToSave;
   }
   
   
@@ -1206,7 +1250,6 @@ public class FSImage extends Storage {
   void format(StorageDirectory sd) throws IOException {
     sd.clearDirectory(); // create currrent dir
     sd.lock();
-    // TODO can we just use normal saveImage?
     try {
       NameNodeDirType dirType = (NameNodeDirType)sd.getStorageDirType();
       if (dirType.isOfType(NameNodeDirType.IMAGE))
@@ -1431,8 +1474,7 @@ public class FSImage extends Storage {
   }
 
   /**
-   * Moves fsimage.ckpt to fsImage and edits.new to edits
-   * Reopens the new edits file.
+   * Moves fsimage_N.ckpt to fsimage_N
    */
   synchronized void rollFSImage(int indexToRoll) throws IOException {
     // First check that all of the checkpoint uploads are in place
@@ -1467,7 +1509,6 @@ public class FSImage extends Storage {
     if (!badDirs.isEmpty()) processIOError(badDirs, true);
 
     mostRecentSavedImageIndex = indexToRoll;
-    writeVersionFiles(); // TODO does this really belong here? This is no longer changing.
   }
 
   /**
@@ -1479,8 +1520,6 @@ public class FSImage extends Storage {
     ArrayList<StorageDirectory> al = null;
     for (Iterator<StorageDirectory> it = dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
-      // TODO we used to remove any files from the directory if they
-      // were the wrong type (eg edits in an image dir)
       try {
         sd.write();
       } catch (IOException e) {
@@ -1495,18 +1534,19 @@ public class FSImage extends Storage {
       processIOError(al, true);
   }
 
-  CheckpointSignature rollEditLog() throws IOException {
+  synchronized CheckpointSignature rollEditLog() throws IOException {
     getEditLog().rollEditLog(++namesystemReflectsLogsThrough);
-    // TODO synchronized?
     return new CheckpointSignature(this);
   }
 
   /**
    * This is called just before a new checkpoint is uploaded to the
-   * namenode.
+   * namenode, and verifies that the checkpoint upload belongs to this
+   * same filesystem. (eg that we don't have a 2NN from another HDFS
+   * cluster trying to overwrite our image)
    */
   void validateCheckpointUpload(CheckpointSignature sig) throws IOException {
-    // TODO
+    sig.validateStorageInfo(this);
   }
 
   /**
@@ -1588,18 +1628,28 @@ public class FSImage extends Storage {
   }
 
   /**
-   * TODO javadoc
+   * Return the index of the newest fsimage_N file.
    */
   int getNewestImageIndex() {
     return mostRecentSavedImageIndex;
   }
 
   /**
-   * TODO this int is unclear, because sometimes it's not the current
+   * Return the
    * inprogress log!
    */
-  int getNamesystemReflectsLogsThrough() {
-    return namesystemReflectsLogsThrough;
+  int getNewestFinalizedLogIndex() {
+
+    int ret = namesystemReflectsLogsThrough;
+    // If we're currently writing a log, then the last finalized
+    // log index is one less than what we're currently writing to.
+    if (editLog != null && editLog.isOpen()) {
+      ret--;
+    }
+    
+    
+    
+    return ret;
   }
 
   synchronized void close() throws IOException {

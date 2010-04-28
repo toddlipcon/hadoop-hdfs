@@ -43,7 +43,7 @@ public class CheckpointSignature extends StorageInfo
 
   CheckpointSignature(FSImage fsImage) {
     super(fsImage);
-    newestFinalizedEditLogIndex = fsImage.getNamesystemReflectsLogsThrough() - 1;
+    newestFinalizedEditLogIndex = fsImage.getNewestFinalizedLogIndex();
     newestImageIndex = fsImage.getNewestImageIndex();
   }
 
