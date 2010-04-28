@@ -1091,7 +1091,7 @@ public class FSImage extends Storage {
    */
   int loadFSEdits(List<File> editsFiles) throws IOException {
 
-    FSEditLogLoader loader = new FSEditLogLoader(this);
+    FSEditLogLoader loader = new FSEditLogLoader(namesystem);
     int numEdits = 0;
     
     for (File f : editsFiles) {

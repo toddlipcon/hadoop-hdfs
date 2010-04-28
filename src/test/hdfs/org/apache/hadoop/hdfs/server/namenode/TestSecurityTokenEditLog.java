@@ -138,7 +138,7 @@ public class TestSecurityTokenEditLog extends TestCase {
       // If there were any corruptions, it is likely that the reading in
       // of these transactions will throw an exception.
       //
-      FSEditLogLoader loader = new FSEditLogLoader(fsimage);
+      FSEditLogLoader loader = new FSEditLogLoader(namesystem);
       namesystem.getDelegationTokenSecretManager().stopThreads();
       int numKeys = namesystem.getDelegationTokenSecretManager().getNumberOfKeys();
       for (Iterator<StorageDirectory> it = 

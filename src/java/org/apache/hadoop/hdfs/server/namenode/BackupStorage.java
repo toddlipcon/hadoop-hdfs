@@ -84,7 +84,7 @@ public class BackupStorage extends FSImage {
   BackupStorage(BackupNode backupNode) {
     super();
     this.backupNode = backupNode;
-    logLoader = new FSEditLogLoader(this);
+    logLoader = new FSEditLogLoader(namesystem);
     journalState = JournalState.JOURNALING;
     backupInputStream = new EditLogBackupInputStream("TODO name me");
   }
@@ -335,7 +335,7 @@ public class BackupStorage extends FSImage {
       return false;
     }
     
-    FSEditLogLoader loader = new FSEditLogLoader(this);
+    FSEditLogLoader loader = new FSEditLogLoader(namesystem);
     EditLogFileInputStream inEditStream;
     try {
       inEditStream = new EditLogFileInputStream(logFile);

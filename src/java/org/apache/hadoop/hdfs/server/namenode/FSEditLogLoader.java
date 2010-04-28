@@ -42,14 +42,19 @@ import org.apache.hadoop.io.WritableFactory;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 
 public class FSEditLogLoader {
-  private final FSImage fsimage;
+  private final FSNamesystem fsNamesys;
 
-  public FSEditLogLoader(FSImage fsimage) {
-    this.fsimage = fsimage;
+  /**
+   * Construct an edit log loader that will apply edits into the
+   * given namesystem.
+   * @param fsNamesys the namesystem to apply edits to
+   */
+  public FSEditLogLoader(FSNamesystem fsNamesys) {
+    this.fsNamesys = fsNamesys;
   }
   
   /**
-   * Load an edit log, and apply the changes to the in-memory structure
+   * Load an edit log, and apply the changes to the in-memory structure.
    * This is where we apply edits that we've been writing to disk all
    * along.
    */
@@ -102,7 +107,6 @@ public class FSEditLogLoader {
   @SuppressWarnings("deprecation")
   int loadEditRecords(int logVersion, DataInputStream in,
       boolean closeOnExit) throws IOException {
-    FSNamesystem fsNamesys = fsimage.getFSNamesystem();
     FSDirectory fsDir = fsNamesys.dir;
     int numEdits = 0;
     String clientName = null;
@@ -471,8 +475,7 @@ public class FSEditLogLoader {
                 + " for version " + logVersion);
           }
           numOpUpdateMasterKey++;
-          DelegationTokenIdentifier delegationTokenId = 
-              new DelegationTokenIdentifier();
+          DelegationKey delegationKey = new DelegationKey();
           delegationKey.readFields(in);
           fsNamesys.getDelegationTokenSecretManager().updatePersistedMasterKey(
               delegationKey);

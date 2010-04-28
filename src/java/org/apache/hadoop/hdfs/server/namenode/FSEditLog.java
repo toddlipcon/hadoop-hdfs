@@ -31,7 +31,6 @@ import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeDirType;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeFile;
 import org.apache.hadoop.hdfs.server.namenode.JournalStream.JournalType;
 import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
@@ -1097,16 +1096,9 @@ public class FSEditLog {
   /**
    * Return the name of the edit file
    */
+  @Deprecated
   synchronized File getFsEditName() {
-    if (1 == 1) throw new RuntimeException("TODO");
-    StorageDirectory sd = null;   
-    for (Iterator<StorageDirectory> it = 
-      fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      sd = it.next();   
-      if(sd.getRoot().canRead())
-        return getFinalizedEditsFile(sd, currentLogIndex);
-    }
-    return null;
+    throw new RuntimeException("TODO");
   }
 
   /**

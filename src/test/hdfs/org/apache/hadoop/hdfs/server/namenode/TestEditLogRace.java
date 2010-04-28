@@ -177,12 +177,6 @@ public class TestEditLogRace {
       final FSNamesystem namesystem = cluster.getNamesystem();
 
       FSImage fsimage = namesystem.getFSImage();
-      FSEditLog editLog = fsimage.getEditLog();
-
-      // set small size of flush buffer
-      editLog.setBufferCapacity(2048);
-      editLog.close();
-      editLog.open();
 
       startTransactionWorkers(namesystem, caughtErr);
 
@@ -192,14 +186,11 @@ public class TestEditLogRace {
         } catch (InterruptedException e) {}
 
         LOG.info("Starting roll " + i + ".");
-        editLog.rollEditLog();
+        CheckpointSignature sig = namesystem.rollEditLog();
+        
         LOG.info("Roll complete " + i + ".");
 
-        verifyEditLogs(namesystem, fsimage);
-
-        LOG.info("Starting purge " + i + ".");
-        editLog.purgeEditLog();
-        LOG.info("Complete purge " + i + ".");
+        verifyEditLogs(namesystem, fsimage, sig.newestFinalizedEditLogIndex);
       }
     } finally {
       stopTransactionWorkers();
@@ -212,17 +203,21 @@ public class TestEditLogRace {
     }
   }
 
-  private void verifyEditLogs(FSNamesystem namesystem, FSImage fsimage)
+  private void verifyEditLogs(FSNamesystem namesystem, FSImage fsimage) {
+    fail("Not yet implemented, TODO");
+  }
+  
+  private void verifyEditLogs(FSNamesystem namesystem, FSImage fsimage, int index)
     throws IOException {
     // Verify that we can read in all the transactions that we have written.
     // If there were any corruptions, it is likely that the reading in
     // of these transactions will throw an exception.
     for (Iterator<StorageDirectory> it = 
            fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS);
+      File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS, index);
       System.out.println("Verifying file: " + editFile);
-      int numEdits = namesystem.getEditLog().loadFSEdits(
-        new EditLogFileInputStream(editFile));
+      int numEdits = new FSEditLogLoader(namesystem).loadFSEdits(
+          new EditLogFileInputStream(editFile));
       System.out.println("Number of edits: " + numEdits);
     }
   }
@@ -246,11 +241,6 @@ public class TestEditLogRace {
 
       FSImage fsimage = namesystem.getFSImage();
       FSEditLog editLog = fsimage.getEditLog();
-
-      // set small size of flush buffer
-      editLog.setBufferCapacity(2048);
-      editLog.close();
-      editLog.open();
 
       startTransactionWorkers(namesystem, caughtErr);
 
