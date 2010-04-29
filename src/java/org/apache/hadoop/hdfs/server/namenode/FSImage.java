@@ -87,7 +87,6 @@ public class FSImage extends Storage {
   //
   enum NameNodeFile {
     IMAGE     ("fsimage"),
-    TIME      ("fstime"),
     EDITS     ("edits"),
     EDITS_INPROGRESS ("edits_inprogress"),
     IMAGE_NEW ("fsimage.ckpt");
@@ -1692,16 +1691,6 @@ public class FSImage extends Storage {
         LOG.warn("failed to restore " + sd.getRoot().getAbsolutePath(), e);
       }
     }    
-  }
-
-  File getFsTimeName() {
-    // TODO do we still need the fstime file?
-    StorageDirectory sd = null;
-    // NameNodeFile.TIME shoul be same on all directories
-    for (Iterator<StorageDirectory> it = 
-             dirIterator(); it.hasNext();)
-      sd = it.next();
-    return getImageFile(sd, NameNodeFile.TIME, 0);
   }
 
   public long getTotalEditLogSize() throws IOException {
