@@ -43,9 +43,9 @@ public interface NamenodeProtocol extends VersionedProtocol {
    * The log of historical changes can be retrieved from the svn).
    * 
    * 4: new method added: getAccessKeys()
-   *      
+   * 5: new image/edit log indexing mechanism
    */
-  public static final long versionID = 4L;
+  public static final long versionID = 5L;
 
   // Error codes passed by errorReport().
   final static int NOTIFY = 0;
@@ -54,8 +54,8 @@ public interface NamenodeProtocol extends VersionedProtocol {
   // Journal action codes. See journal().
   public static byte JA_IS_ALIVE = 100; // check whether the journal is alive
   public static byte JA_JOURNAL      = 101; // just journal
-  public static byte JA_JSPOOL_START = 102;  // = FSEditLog.OP_JSPOOL_START
-  public static byte JA_CHECKPOINT_TIME = 103; // = FSEditLog.OP_CHECKPOINT_TIME
+  public static byte JA_ROLL_LOGS = 102; // master has rolled logs
+  
 
   public final static int ACT_UNKNOWN = 0;    // unknown action   
   public final static int ACT_SHUTDOWN = 50;   // shutdown node
@@ -108,12 +108,13 @@ public interface NamenodeProtocol extends VersionedProtocol {
    * Rolls the fsImage log. It removes the old fsImage, copies the
    * new image to fsImage, removes the old edits and renames edits.new 
    * to edits. The call fails if any of the four files are missing.
+   * TODO edit docs
    * @throws IOException
    * @deprecated 
    *    See {@link org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode}
    */
   @Deprecated
-  public void rollFsImage() throws IOException;
+  public void rollFsImage(CheckpointSignature sig) throws IOException;
 
   /**
    * Request name-node version and storage information.

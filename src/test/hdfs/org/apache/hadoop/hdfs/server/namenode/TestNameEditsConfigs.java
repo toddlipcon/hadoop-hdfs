@@ -38,8 +38,8 @@ public class TestNameEditsConfigs extends TestCase {
   static final int BLOCK_SIZE = 4096;
   static final int FILE_SIZE = 8192;
   static final int NUM_DATA_NODES = 3;
-  static final String FILE_IMAGE = "current/fsimage";
-  static final String FILE_EDITS = "current/edits";
+  static final String FILE_IMAGE = "fsimage";
+  static final String FILE_EDITS = "edits";
 
   short replication = 3;
   private File base_dir = new File(
@@ -67,12 +67,41 @@ public class TestNameEditsConfigs extends TestCase {
     stm.close();
   }
 
+  private File[] listStorageFiles(File dir, final String prefix) {    
+    File[] matches = dir.listFiles(new FilenameFilter() {
+      @Override
+      public boolean accept(File dir, String name) {
+        return name.startsWith(prefix);
+      }      
+    });
+    return matches;
+  }
+  
+  private boolean hasAnyStorageFile(File dir, final String prefix) {
+    return listStorageFiles(dir, prefix).length > 0;
+  }
+  
+  
   void checkImageAndEditsFilesExistence(File dir, 
                                         boolean imageMustExist,
                                         boolean editsMustExist) {
-    assertTrue(imageMustExist == new File(dir, FILE_IMAGE).exists());
-    assertTrue(editsMustExist == new File(dir, FILE_EDITS).exists());
+    File currentDir = new File(dir, "current");
+    assertTrue(imageMustExist == hasAnyStorageFile(currentDir, FILE_IMAGE));
+    assertTrue(editsMustExist == hasAnyStorageFile(currentDir, FILE_EDITS));
   }
+  
+  private void moveStorageFiles(String prefixToMove,
+      File srcDir, File dstDir) {
+    
+    File srcCurrent = new File(srcDir, "current");
+    File dstCurrent = new File(dstDir, "current");
+    
+    File[] srcFiles = listStorageFiles(srcCurrent, prefixToMove);
+    for (File f : srcFiles) {
+      f.renameTo(new File(dstCurrent, f.getName()));
+    }
+  }
+
 
   private void checkFile(FileSystem fileSys, Path name, int repl)
     throws IOException {
@@ -200,14 +229,11 @@ public class TestNameEditsConfigs extends TestCase {
 
     // Now remove common directory both have and start namenode with 
     // separate name and edits dirs
-    new File(nameAndEdits, FILE_EDITS).renameTo(
-        new File(newNameDir, FILE_EDITS));
-    new File(nameAndEdits, FILE_IMAGE).renameTo(
-        new File(newEditsDir, FILE_IMAGE));
-    new File(checkpointNameAndEdits, FILE_EDITS).renameTo(
-        new File(checkpointNameDir, FILE_EDITS));
-    new File(checkpointNameAndEdits, FILE_IMAGE).renameTo(
-        new File(checkpointEditsDir, FILE_IMAGE));
+    moveStorageFiles(FILE_EDITS, nameAndEdits, newNameDir);
+    moveStorageFiles(FILE_IMAGE, nameAndEdits, newEditsDir);
+    moveStorageFiles(FILE_EDITS, checkpointNameAndEdits, checkpointNameDir);
+    moveStorageFiles(FILE_IMAGE, checkpointNameAndEdits, checkpointEditsDir);
+
     conf =  new HdfsConfiguration();
     conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, newNameDir.getPath());
     conf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY, newEditsDir.getPath());
@@ -280,6 +306,7 @@ public class TestNameEditsConfigs extends TestCase {
     checkImageAndEditsFilesExistence(nameAndEdits, true, true);
     checkImageAndEditsFilesExistence(checkpointNameAndEdits, true, true);
   }
+
 
   /**
    * Test various configuration options of dfs.name.dir and dfs.name.edits.dir

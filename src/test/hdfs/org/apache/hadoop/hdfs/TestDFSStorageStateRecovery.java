@@ -156,9 +156,13 @@ public class TestDFSStorageStateRecovery extends TestCase {
         for (int i = 0; i < baseDirs.length; i++) {
           assertTrue(new File(baseDirs[i],"current").isDirectory());
           assertTrue(new File(baseDirs[i],"current/VERSION").isFile());
-          assertTrue(new File(baseDirs[i],"current/edits").isFile());
-          assertTrue(new File(baseDirs[i],"current/fsimage").isFile());
-          assertTrue(new File(baseDirs[i],"current/fstime").isFile());
+
+          String[] editsfiles = new File(baseDirs[i], "current").list(new DFSTestUtil.EditsFilenameFilter());
+          assertTrue(editsfiles.length != 0);
+          String[] inpeditsfiles = new File(baseDirs[i], "current").list(new DFSTestUtil.InprogressEditsFilenameFilter());
+          assertTrue(inpeditsfiles.length != 0);
+          String[] imagefiles = new File(baseDirs[i], "current").list(new DFSTestUtil.ImageFilenameFilter());
+          assertTrue(imagefiles.length != 0);
         }
       }
       break;

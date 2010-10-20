@@ -22,7 +22,7 @@ import static org.apache.hadoop.hdfs.server.common.HdfsConstants.NodeType.NAME_N
 
 import java.io.File;
 import java.io.IOException;
-
+import java.io.FilenameFilter;
 import junit.framework.TestCase;
 
 import org.apache.commons.logging.Log;
@@ -66,9 +66,12 @@ public class TestDFSRollback extends TestCase {
       for (int i = 0; i < baseDirs.length; i++) {
         assertTrue(new File(baseDirs[i],"current").isDirectory());
         assertTrue(new File(baseDirs[i],"current/VERSION").isFile());
-        assertTrue(new File(baseDirs[i],"current/edits").isFile());
-        assertTrue(new File(baseDirs[i],"current/fsimage").isFile());
-        assertTrue(new File(baseDirs[i],"current/fstime").isFile());
+
+        String[] editsfiles = new File(baseDirs[i], "current").list(new DFSTestUtil.EditsFilenameFilter());
+        assertTrue(editsfiles.length != 0);
+
+        String[] imagefiles = new File(baseDirs[i], "current").list(new DFSTestUtil.ImageFilenameFilter());
+        assertTrue(imagefiles.length != 0);
       }
       break;
     case DATA_NODE:
@@ -221,6 +224,8 @@ public class TestDFSRollback extends TestCase {
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
       UpgradeUtilities.createEmptyDirs(dataNodeDirs);
 
+      /** Post HDFS-1073, the name node can start without a edit log. Previous to this it would fail on FSImage.java:L979
+
       log("NameNode rollback with no edits file", numDirs);
       UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "current");
       baseDirs = UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "previous");
@@ -229,12 +234,15 @@ public class TestDFSRollback extends TestCase {
       }
       startNameNodeShouldFail(StartupOption.ROLLBACK);
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
-      
+      */
+
       log("NameNode rollback with no image file", numDirs);
       UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "current");
       baseDirs = UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "previous");
       for (File f : baseDirs) { 
-        FileUtil.fullyDelete(new File(f,"fsimage")); 
+        for (File fsimage : f.listFiles(new DFSTestUtil.ImageFilenameFilter())) {
+          FileUtil.fullyDelete(fsimage); 
+        }
       }
       startNameNodeShouldFail(StartupOption.ROLLBACK);
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);

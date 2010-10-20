@@ -189,7 +189,7 @@ class EditLogFileOutputStream extends EditLogOutputStream {
    */
   @Override
   boolean isOperationSupported(byte op) {
-    return op < FSEditLog.Ops.OP_JSPOOL_START - 1;
+    return op != FSEditLog.Ops.OP_ROLL_LOGS;
   }
 
   /**

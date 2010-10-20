@@ -33,15 +33,20 @@ import org.apache.hadoop.io.WritableComparable;
 public class CheckpointSignature extends StorageInfo 
                       implements WritableComparable<CheckpointSignature> {
   private static final String FIELD_SEPARATOR = ":";
-  long editsTime = -1L;
-  long checkpointTime = -1L;
+
+  // TODO rename these fields, add some more safeguards
+  /** Actually the edits roll index to read up to */
+  int newestFinalizedEditLogIndex = -1;
+
+  /** Actually the image index to pull */
+  int newestImageIndex = -1;
 
   public CheckpointSignature() {}
 
   CheckpointSignature(FSImage fsImage) {
     super(fsImage);
-    editsTime = fsImage.getEditLog().getFsEditTime();
-    checkpointTime = fsImage.getCheckpointTime();
+    newestFinalizedEditLogIndex = fsImage.getNewestFinalizedLogIndex();
+    newestImageIndex = fsImage.getNewestImageIndex();
   }
 
   CheckpointSignature(String str) {
@@ -50,29 +55,28 @@ public class CheckpointSignature extends StorageInfo
     layoutVersion = Integer.valueOf(fields[0]);
     namespaceID = Integer.valueOf(fields[1]);
     cTime = Long.valueOf(fields[2]);
-    editsTime = Long.valueOf(fields[3]);
-    checkpointTime = Long.valueOf(fields[4]);
+    newestFinalizedEditLogIndex = Integer.valueOf(fields[3]);
+    newestImageIndex = Integer.valueOf(fields[4]);
   }
 
   public String toString() {
     return String.valueOf(layoutVersion) + FIELD_SEPARATOR
          + String.valueOf(namespaceID) + FIELD_SEPARATOR
          + String.valueOf(cTime) + FIELD_SEPARATOR
-         + String.valueOf(editsTime) + FIELD_SEPARATOR
-         + String.valueOf(checkpointTime);
+         + String.valueOf(newestFinalizedEditLogIndex) + FIELD_SEPARATOR
+         + String.valueOf(newestImageIndex);
   }
 
   void validateStorageInfo(FSImage si) throws IOException {
     if(layoutVersion != si.layoutVersion
-        || namespaceID != si.namespaceID || cTime != si.cTime
-        || checkpointTime != si.checkpointTime) {
+        || namespaceID != si.namespaceID || cTime != si.cTime) {
       // checkpointTime can change when the image is saved - do not compare
+      // TODO still true?
       throw new IOException("Inconsistent checkpoint fields.\n"
           + "LV = " + layoutVersion + " namespaceID = " + namespaceID
-          + " cTime = " + cTime + "; checkpointTime = " + checkpointTime 
+          + " cTime = " + cTime
           + ".\nExpecting respectively: "
-          + si.layoutVersion + "; " + si.namespaceID + "; " + si.cTime
-          + "; " + si.checkpointTime);
+          + si.layoutVersion + "; " + si.namespaceID + "; " + si.cTime);          
     }
   }
 
@@ -85,9 +89,9 @@ public class CheckpointSignature extends StorageInfo
                   (layoutVersion > o.layoutVersion) ? 1 :
       (namespaceID < o.namespaceID) ? -1 : (namespaceID > o.namespaceID) ? 1 :
       (cTime < o.cTime) ? -1 : (cTime > o.cTime) ? 1 :
-      (editsTime < o.editsTime) ? -1 : (editsTime > o.editsTime) ? 1 :
-      (checkpointTime < o.checkpointTime) ? -1 : 
-                  (checkpointTime > o.checkpointTime) ? 1 : 0;
+      (newestFinalizedEditLogIndex < o.newestFinalizedEditLogIndex) ? -1 : (newestFinalizedEditLogIndex > o.newestFinalizedEditLogIndex) ? 1 :
+      (newestImageIndex < o.newestImageIndex) ? -1 : 
+                  (newestImageIndex > o.newestImageIndex) ? 1 : 0;
   }
 
   public boolean equals(Object o) {
@@ -99,7 +103,7 @@ public class CheckpointSignature extends StorageInfo
 
   public int hashCode() {
     return layoutVersion ^ namespaceID ^
-            (int)(cTime ^ editsTime ^ checkpointTime);
+            (int)(cTime ^ newestFinalizedEditLogIndex ^ newestImageIndex);
   }
 
   /////////////////////////////////////////////////
@@ -107,13 +111,13 @@ public class CheckpointSignature extends StorageInfo
   /////////////////////////////////////////////////
   public void write(DataOutput out) throws IOException {
     super.write(out);
-    out.writeLong(editsTime);
-    out.writeLong(checkpointTime);
+    out.writeInt(newestFinalizedEditLogIndex);
+    out.writeInt(newestImageIndex);
   }
 
   public void readFields(DataInput in) throws IOException {
     super.readFields(in);
-    editsTime = in.readLong();
-    checkpointTime = in.readLong();
+    newestFinalizedEditLogIndex = in.readInt();
+    newestImageIndex = in.readInt();
   }
 }

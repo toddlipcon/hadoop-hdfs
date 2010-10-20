@@ -108,11 +108,13 @@ public class TestEditLog extends TestCase {
   
       FSImage fsimage = namesystem.getFSImage();
       FSEditLog editLog = fsimage.getEditLog();
-  
+
       // set small size of flush buffer
       editLog.setBufferCapacity(initialSize);
-      editLog.close();
-      editLog.open();
+
+      // Roll log so new output buffer size takes effect
+      // we should now be writing to edits_inprogress_2
+      fsimage.rollEditLog();
     
       // Create threads and make them run transactions concurrently.
       Thread threadId[] = new Thread[NUM_THREADS];
@@ -130,10 +132,11 @@ public class TestEditLog extends TestCase {
           i--;      // retry 
         }
       } 
+
+      // Roll another time to finalize edits_2
+      fsimage.rollEditLog();
+
       
-      editLog.close();
-      editLog.open();
-  
       // Verify that we can read in all the transactions that we have written.
       // If there were any corruptions, it is likely that the reading in
       // of these transactions will throw an exception.
@@ -141,7 +144,8 @@ public class TestEditLog extends TestCase {
       FSEditLogLoader loader = new FSEditLogLoader(namesystem);
       for (Iterator<StorageDirectory> it = 
               fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-        File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS);
+        // load edits_2
+        File editFile = FSImage.getImageFile(it.next(), NameNodeFile.EDITS, 2);
         System.out.println("Verifying file: " + editFile);
         int numEdits = loader.loadFSEdits(
                                   new EditLogFileInputStream(editFile));

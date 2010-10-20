@@ -31,7 +31,6 @@ import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.FSConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
-import static org.apache.hadoop.hdfs.server.common.Util.now;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLog.Ops;
@@ -41,16 +40,22 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableFactories;
 import org.apache.hadoop.io.WritableFactory;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
+import static org.apache.hadoop.hdfs.server.common.Util.now;
 
 public class FSEditLogLoader {
   private final FSNamesystem fsNamesys;
 
+  /**
+   * Construct an edit log loader that will apply edits into the
+   * given namesystem.
+   * @param fsNamesys the namesystem to apply edits to
+   */
   public FSEditLogLoader(FSNamesystem fsNamesys) {
     this.fsNamesys = fsNamesys;
   }
   
   /**
-   * Load an edit log, and apply the changes to the in-memory structure
+   * Load an edit log, and apply the changes to the in-memory structure.
    * This is where we apply edits that we've been writing to disk all
    * along.
    */
@@ -319,7 +324,7 @@ public class FSEditLogLoader {
           numOpOther++;
           FSImage.DatanodeImage nodeimage = new FSImage.DatanodeImage();
           nodeimage.readFields(in);
-          //Datanodes are not persistent any more.
+          //Datnodes are not persistent any more.
           break;
         }
         case Ops.OP_DATANODE_REMOVE: {

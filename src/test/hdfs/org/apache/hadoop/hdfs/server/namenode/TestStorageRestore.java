@@ -147,62 +147,14 @@ public class TestStorageRestore extends TestCase {
     for(Iterator<StorageDirectory> it = fs.dirIterator(); it.hasNext(); ) {
       StorageDirectory sd = it.next();
       
-      if(sd.getStorageDirType().isOfType(NameNodeDirType.IMAGE)) {
-        File imf = FSImage.getImageFile(sd, NameNodeFile.IMAGE);
-        LOG.info("  image file " + imf.getAbsolutePath() + "; len = " + imf.length());  
-      }
-      if(sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)) {
-        File edf = FSImage.getImageFile(sd, NameNodeFile.EDITS);
-        LOG.info("  edits file " + edf.getAbsolutePath() + "; len = " + edf.length()); 
+      File curDir = sd.getCurrentDir();
+      for (File f : curDir.listFiles()) {
+        LOG.info("  file " + f.getAbsolutePath() + "; len = " + f.length());  
       }
     }
   }
   
-  
-  /**
-   * This function returns a md5 hash of a file.
-   * 
-   * @param file input file
-   * @return The md5 string
-   */
-  public String getFileMD5(File file) throws Exception {
-    String res = new String();
-    MessageDigest mD = MessageDigest.getInstance("MD5");
-    DataInputStream dis = new DataInputStream(new FileInputStream(file));
 
-    try {
-      while(true) {
-        mD.update(dis.readByte());
-      }
-    } catch (EOFException eof) {}
-
-    BigInteger bigInt = new BigInteger(1, mD.digest());
-    res = bigInt.toString(16);
-    dis.close();
-
-    return res;
-  }
-
-  
-  /**
-   * read currentCheckpointTime directly from the file
-   * @param currDir
-   * @return the checkpoint time
-   * @throws IOException
-   */
-  long readCheckpointTime(File currDir) throws IOException {
-    File timeFile = new File(currDir, NameNodeFile.TIME.getName()); 
-    long timeStamp = 0L;
-    if (timeFile.exists() && timeFile.canRead()) {
-      DataInputStream in = new DataInputStream(new FileInputStream(timeFile));
-      try {
-        timeStamp = in.readLong();
-      } finally {
-        in.close();
-      }
-    }
-    return timeStamp;
-  }
   
   /**
    *  check if files exist/not exist
@@ -218,15 +170,11 @@ public class TestStorageRestore extends TestCase {
     File fsEdits2 = new File(path2, Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS.getName());
     File fsEdits3 = new File(path3, Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS.getName());
     
-    long chkPt1 = readCheckpointTime(new File(path1, Storage.STORAGE_DIR_CURRENT));
-    long chkPt2 = readCheckpointTime(new File(path2, Storage.STORAGE_DIR_CURRENT));
-    long chkPt3 = readCheckpointTime(new File(path3, Storage.STORAGE_DIR_CURRENT));
-    
     String md5_1 = null,md5_2 = null,md5_3 = null;
     try {
-      md5_1 = getFileMD5(fsEdits1);
-      md5_2 = getFileMD5(fsEdits2);
-      md5_3 = getFileMD5(fsEdits3);
+      md5_1 = FSImageTestUtil.getFileMD5(fsEdits1);
+      md5_2 = FSImageTestUtil.getFileMD5(fsEdits2);
+      md5_3 = FSImageTestUtil.getFileMD5(fsEdits3);
     } catch (Exception e) {
       System.err.println("md 5 calculation failed:" + e.getLocalizedMessage());
     }
@@ -236,7 +184,6 @@ public class TestStorageRestore extends TestCase {
     LOG.info("++++ edits files = "+fsEdits1.getAbsolutePath() + "," + fsEdits2.getAbsolutePath() + ","+ fsEdits3.getAbsolutePath());
     LOG.info("checkFiles compares lengths: img1=" + fsImg1.length()  + ",img2=" + fsImg2.length()  + ",img3=" + fsImg3.length());
     LOG.info("checkFiles compares lengths: edits1=" + fsEdits1.length()  + ",edits2=" + fsEdits2.length()  + ",edits3=" + fsEdits3.length());
-    LOG.info("checkFiles compares chkPts: name1=" + chkPt1  + ",name2=" + chkPt2  + ",name3=" + chkPt3);
     LOG.info("checkFiles compares md5s: " + fsEdits1.getAbsolutePath() + 
         "="+ md5_1  + "," + fsEdits2.getAbsolutePath() + "=" + md5_2  + "," +
         fsEdits3.getAbsolutePath() + "=" + md5_3);  
@@ -250,9 +197,6 @@ public class TestStorageRestore extends TestCase {
       assertTrue(md5_1.equals(md5_2));
       assertTrue(md5_1.equals(md5_3));
       
-      // checkpoint times
-      assertTrue(chkPt1 == chkPt2);
-      assertTrue(chkPt1 == chkPt3);
     } else {
       // should be different
       //assertTrue(fsImg1.length() != fsImg2.length());
@@ -262,11 +206,6 @@ public class TestStorageRestore extends TestCase {
       
       assertTrue(!md5_1.equals(md5_2));
       assertTrue(!md5_1.equals(md5_3));
-      
-      
-   // checkpoint times
-      assertTrue(chkPt1 > chkPt2);
-      assertTrue(chkPt1 > chkPt3);
     }
   }
   
