@@ -148,7 +148,7 @@ public class FSEditLogLoader {
                                     " but writables.length is " +
                                     length + ". ");
           }
-          path = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
           short replication = fsNamesys.adjustReplication(readShort(in));
           mtime = readLong(in);
           if (logVersion <= -17) {
@@ -182,8 +182,8 @@ public class FSEditLogLoader {
 
           // clientname, clientMachine and block locations of last block.
           if (opcode == Ops.OP_ADD && logVersion <= -12) {
-            clientName = FSImage.readString(in);
-            clientMachine = FSImage.readString(in);
+            clientName = FSImageLoader.readString(in);
+            clientMachine = FSImageLoader.readString(in);
             if (-13 <= logVersion) {
               readDatanodeDescriptorArray(in);
             }
@@ -231,7 +231,7 @@ public class FSEditLogLoader {
         } 
         case Ops.OP_SET_REPLICATION: {
           numOpSetRepl++;
-          path = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
           short replication = fsNamesys.adjustReplication(readShort(in));
           fsDir.unprotectedSetReplication(path, replication, null);
           break;
@@ -247,11 +247,11 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "Mkdir operation.");
           }
-          String trg = FSImage.readString(in);
+          String trg = FSImageLoader.readString(in);
           int srcSize = length - 1 - 1; //trg and timestamp
           String [] srcs = new String [srcSize];
           for(int i=0; i<srcSize;i++) {
-            srcs[i]= FSImage.readString(in);
+            srcs[i]= FSImageLoader.readString(in);
           }
           timestamp = readLong(in);
           fsDir.unprotectedConcat(trg, srcs);
@@ -264,8 +264,8 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "Mkdir operation.");
           }
-          String s = FSImage.readString(in);
-          String d = FSImage.readString(in);
+          String s = FSImageLoader.readString(in);
+          String d = FSImageLoader.readString(in);
           timestamp = readLong(in);
           HdfsFileStatus dinfo = fsDir.getFileInfo(d, false);
           fsDir.unprotectedRenameTo(s, d, timestamp);
@@ -279,7 +279,7 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "delete operation.");
           }
-          path = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
           timestamp = readLong(in);
           fsDir.unprotectedDelete(path, timestamp);
           break;
@@ -293,7 +293,7 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "Mkdir operation.");
           }
-          path = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
           timestamp = readLong(in);
 
           // The disk format stores atimes for directories as well.
@@ -317,7 +317,7 @@ public class FSEditLogLoader {
         } 
         case Ops.OP_DATANODE_ADD: {
           numOpOther++;
-          FSImage.DatanodeImage nodeimage = new FSImage.DatanodeImage();
+          FSImageLoader.DatanodeImage nodeimage = new FSImageLoader.DatanodeImage();
           nodeimage.readFields(in);
           //Datanodes are not persistent any more.
           break;
@@ -335,7 +335,7 @@ public class FSEditLogLoader {
             throw new IOException("Unexpected opcode " + opcode
                                   + " for version " + logVersion);
           fsDir.unprotectedSetPermission(
-              FSImage.readString(in), FsPermission.read(in));
+              FSImageLoader.readString(in), FsPermission.read(in));
           break;
         }
         case Ops.OP_SET_OWNER: {
@@ -343,9 +343,9 @@ public class FSEditLogLoader {
           if (logVersion > -11)
             throw new IOException("Unexpected opcode " + opcode
                                   + " for version " + logVersion);
-          fsDir.unprotectedSetOwner(FSImage.readString(in),
-              FSImage.readString_EmptyAsNull(in),
-              FSImage.readString_EmptyAsNull(in));
+          fsDir.unprotectedSetOwner(FSImageLoader.readString(in),
+              FSImageLoader.readString_EmptyAsNull(in),
+              FSImageLoader.readString_EmptyAsNull(in));
           break;
         }
         case Ops.OP_SET_NS_QUOTA: {
@@ -353,7 +353,7 @@ public class FSEditLogLoader {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
           }
-          fsDir.unprotectedSetQuota(FSImage.readString(in), 
+          fsDir.unprotectedSetQuota(FSImageLoader.readString(in), 
                                     readLongWritable(in), 
                                     FSConstants.QUOTA_DONT_SET);
           break;
@@ -363,14 +363,14 @@ public class FSEditLogLoader {
             throw new IOException("Unexpected opcode " + opcode
                 + " for version " + logVersion);
           }
-          fsDir.unprotectedSetQuota(FSImage.readString(in),
+          fsDir.unprotectedSetQuota(FSImageLoader.readString(in),
                                     FSConstants.QUOTA_RESET,
                                     FSConstants.QUOTA_DONT_SET);
           break;
         }
 
         case Ops.OP_SET_QUOTA:
-          fsDir.unprotectedSetQuota(FSImage.readString(in),
+          fsDir.unprotectedSetQuota(FSImageLoader.readString(in),
                                     readLongWritable(in),
                                     readLongWritable(in));
                                       
@@ -383,7 +383,7 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "times operation.");
           }
-          path = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
           mtime = readLong(in);
           atime = readLong(in);
           fsDir.unprotectedSetTimes(path, mtime, atime, true);
@@ -396,8 +396,8 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "symlink operation.");
           }
-          path = FSImage.readString(in);
-          String value = FSImage.readString(in);
+          path = FSImageLoader.readString(in);
+          String value = FSImageLoader.readString(in);
           mtime = readLong(in);
           atime = readLong(in);
           PermissionStatus perm = PermissionStatus.read(in);
@@ -415,8 +415,8 @@ public class FSEditLogLoader {
             throw new IOException("Incorrect data format. " 
                                   + "Mkdir operation.");
           }
-          String s = FSImage.readString(in);
-          String d = FSImage.readString(in);
+          String s = FSImageLoader.readString(in);
+          String d = FSImageLoader.readString(in);
           timestamp = readLong(in);
           Rename[] options = readRenameOptions(in);
           HdfsFileStatus dinfo = fsDir.getFileInfo(d, false);
@@ -554,11 +554,11 @@ public class FSEditLogLoader {
   }
 
   static private short readShort(DataInputStream in) throws IOException {
-    return Short.parseShort(FSImage.readString(in));
+    return Short.parseShort(FSImageLoader.readString(in));
   }
 
   static private long readLong(DataInputStream in) throws IOException {
-    return Long.parseLong(FSImage.readString(in));
+    return Long.parseLong(FSImageLoader.readString(in));
   }
   
   // a place holder for reading a long

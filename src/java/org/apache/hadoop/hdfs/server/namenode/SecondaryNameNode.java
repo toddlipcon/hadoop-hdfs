@@ -672,7 +672,12 @@ public class SecondaryNameNode implements Runnable {
         sdEdits = it.next();
       if ((sdName == null) || (sdEdits == null))
         throw new IOException("Could not locate checkpoint directories");
-      this.layoutVersion = -1; // to avoid assert in loadFSImage()
+
+      // Loading the fsimage file will verify the layout version and
+      // namespace ID, so populate those first from the signature
+      this.layoutVersion = FSConstants.LAYOUT_VERSION;
+      this.namespaceID = sig.getNamespaceID();
+
       loadFSImage(FSImage.getImageFile(sdName, NameNodeFile.IMAGE));
       loadFSEdits(sdEdits);
       sig.validateStorageInfo(this);

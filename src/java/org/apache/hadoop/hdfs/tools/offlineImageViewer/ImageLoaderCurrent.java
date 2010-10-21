@@ -26,7 +26,7 @@ import java.util.Date;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
-import org.apache.hadoop.hdfs.server.namenode.FSImage;
+import org.apache.hadoop.hdfs.server.namenode.FSImageLoader;
 import org.apache.hadoop.hdfs.tools.offlineImageViewer.ImageVisitor.ImageElement;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableUtils;
@@ -214,7 +214,7 @@ class ImageLoaderCurrent implements ImageLoader {
 
     for(int i = 0; i < numINUC; i++) {
       v.visitEnclosingElement(ImageElement.INODE_UNDER_CONSTRUCTION);
-      byte [] name = FSImage.readBytes(in);
+      byte [] name = FSImageLoader.readBytes(in);
       String n = new String(name, "UTF8");
       v.visit(ImageElement.INODE_PATH, n);
       v.visit(ImageElement.REPLICATION, in.readShort());
@@ -225,8 +225,8 @@ class ImageLoaderCurrent implements ImageLoader {
       processBlocks(in, v, numBlocks, skipBlocks);
 
       processPermission(in, v);
-      v.visit(ImageElement.CLIENT_NAME, FSImage.readString(in));
-      v.visit(ImageElement.CLIENT_MACHINE, FSImage.readString(in));
+      v.visit(ImageElement.CLIENT_NAME, FSImageLoader.readString(in));
+      v.visit(ImageElement.CLIENT_MACHINE, FSImageLoader.readString(in));
 
       // Skip over the datanode descriptors, which are still stored in the
       // file but are not used by the datanode or loaded into memory
@@ -237,8 +237,8 @@ class ImageLoaderCurrent implements ImageLoader {
         in.readLong();
         in.readLong();
         in.readInt();
-        FSImage.readString(in);
-        FSImage.readString(in);
+        FSImageLoader.readString(in);
+        FSImageLoader.readString(in);
         WritableUtils.readEnum(in, AdminStates.class);
       }
 
@@ -316,7 +316,7 @@ class ImageLoaderCurrent implements ImageLoader {
 
     for(long i = 0; i < numInodes; i++) {
       v.visitEnclosingElement(ImageElement.INODE);
-      v.visit(ImageElement.INODE_PATH, FSImage.readString(in));
+      v.visit(ImageElement.INODE_PATH, FSImageLoader.readString(in));
       v.visit(ImageElement.REPLICATION, in.readShort());
       v.visit(ImageElement.MODIFICATION_TIME, formatDate(in.readLong()));
       if(imageVersion <= -17) // added in version -17
