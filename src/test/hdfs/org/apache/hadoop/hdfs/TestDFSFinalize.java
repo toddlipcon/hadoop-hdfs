@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs;
 
 import java.io.File;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import junit.framework.TestCase;
 import org.apache.commons.logging.Log;
@@ -61,9 +62,12 @@ public class TestDFSFinalize extends TestCase {
     for (int i = 0; i < nameNodeDirs.length; i++) {
       assertTrue(new File(nameNodeDirs[i],"current").isDirectory());
       assertTrue(new File(nameNodeDirs[i],"current/VERSION").isFile());
-      assertTrue(new File(nameNodeDirs[i],"current/edits").isFile());
-      assertTrue(new File(nameNodeDirs[i],"current/fsimage").isFile());
-      assertTrue(new File(nameNodeDirs[i],"current/fstime").isFile());
+      
+      String[] editsfiles = new File(nameNodeDirs[i], "current").list(new DFSTestUtil.EditsFilenameFilter());
+      assertTrue(editsfiles.length != 0);
+
+      String[] imagefiles = new File(nameNodeDirs[i], "current").list(new DFSTestUtil.ImageFilenameFilter());
+      assertTrue(imagefiles.length != 0);
     }
     for (int i = 0; i < dataNodeDirs.length; i++) {
       assertEquals(

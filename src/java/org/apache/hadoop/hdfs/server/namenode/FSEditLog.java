@@ -34,13 +34,13 @@ import org.apache.hadoop.hdfs.server.common.HdfsConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import static org.apache.hadoop.hdfs.server.common.Util.now;
 import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeDirType;
-import org.apache.hadoop.hdfs.server.namenode.FSImage.NameNodeFile;
 import org.apache.hadoop.hdfs.server.namenode.JournalStream.JournalType;
 import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeRegistration;
 import org.apache.hadoop.io.ArrayWritable;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
@@ -85,19 +85,20 @@ public class FSEditLog {
      * The following operations are used to control remote edit log streams,
      * and not logged into file streams.
      */
-    static final byte OP_JSPOOL_START = // start journal spool
-                                      NamenodeProtocol.JA_JSPOOL_START;
-    static final byte OP_CHECKPOINT_TIME = // incr checkpoint time
-                                      NamenodeProtocol.JA_CHECKPOINT_TIME;
+    static final byte OP_ROLL_LOGS = NamenodeProtocol.JA_ROLL_LOGS;// primary NN has rolled edit logs
   }
 
   static final String NO_JOURNAL_STREAMS_WARNING = "!!! WARNING !!!" +
       " File system changes are not persistent. No journal streams.";
 
-  private volatile int sizeOutputFlushBuffer = 512*1024;
+  private static int DEFAULT_OUTPUT_FLUSH_BUFFER = 512*1024;
+  private volatile int sizeOutputFlushBuffer = DEFAULT_OUTPUT_FLUSH_BUFFER;
 
   private ArrayList<EditLogOutputStream> editStreams = null;
   private FSImage fsimage = null;
+
+  // the index of the log currently being written to, or -1 if closed
+  private int currentLogIndex;
 
   // a monotonically increasing counter that represents transactionIds.
   private long txid = 0;
@@ -135,21 +136,15 @@ public class FSEditLog {
     }
   };
 
-  FSEditLog(FSImage image) {
+  FSEditLog(FSImage image, int logIndex) {
     fsimage = image;
     isSyncRunning = false;
     metrics = NameNode.getNameNodeMetrics();
-    lastPrintTime = now();
+    lastPrintTime = now();    
+    currentLogIndex = logIndex;
   }
-  
-  private File getEditFile(StorageDirectory sd) {
-    return fsimage.getEditFile(sd);
-  }
-  
-  private File getEditNewFile(StorageDirectory sd) {
-    return fsimage.getEditNewFile(sd);
-  }
-  
+
+
   private int getNumEditsDirs() {
    return fsimage.getNumStorageDirs(NameNodeDirType.EDITS);
   }
@@ -170,48 +165,88 @@ public class FSEditLog {
     return getNumEditStreams() > 0;
   }
 
+  private void checkClosed() throws IOException {
+    if (isOpen()) {
+      throw new IOException("Logs must be closed.");
+    }
+  }
+  
   /**
    * Create empty edit log files.
    * Initialize the output stream for logging.
    * 
    * @throws IOException
    */
-  synchronized void open() throws IOException {
+  synchronized void openNewLogs(int index) throws IOException {
+    checkClosed();
     numTransactions = totalTimeTransactions = numTransactionsBatchedInSync = 0;
     if (editStreams == null)
       editStreams = new ArrayList<EditLogOutputStream>();
-    
+
+    currentLogIndex = index;
+
     ArrayList<StorageDirectory> al = null;
     for (Iterator<StorageDirectory> it = 
            fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
       StorageDirectory sd = it.next();
-      File eFile = getEditFile(sd);
       try {
-        addNewEditLogStream(eFile);
+        createAndAddEditLogStream(sd, index);
       } catch (IOException e) {
-        FSNamesystem.LOG.warn("Unable to open edit log file " + eFile);
+        FSNamesystem.LOG.warn("Unable to create new log file in sd " + sd.getRoot(), e);
         // Remove the directory from list of storage directories
         if(al == null) al = new ArrayList<StorageDirectory>(1);
         al.add(sd);
-        
       }
     }
-    
+
     if(al != null) fsimage.processIOError(al, false);
   }
-  
-  
-  synchronized void addNewEditLogStream(File eFile) throws IOException {
+
+  synchronized void createAndAddEditLogStream(StorageDirectory sd,
+                                              int index) throws IOException {
+    if (index != currentLogIndex) {
+      throw new IllegalStateException(
+        "Current index is " +  currentLogIndex + " but trying to add " +
+        "new edit index " + index);
+    }
+
+    File eFile = FSImage.getInProgressEditsFile(sd, index);
+    if (eFile.exists()) {
+      throw new IOException("Cannot create inprogress file with index " +
+                            index + " in " + sd + " since inprogress file " +
+                            "already exists");
+    }
+    if (FSImage.existsFinalizedEditsFile(sd, index)) {
+      throw new IOException("Cannot create inprogress file with index " +
+                            index + " in " + sd + " since finalized file " +
+                            "already exists");
+    }
+
     EditLogOutputStream eStream = new EditLogFileOutputStream(eFile,
         sizeOutputFlushBuffer);
+    eStream.create();
     editStreams.add(eStream);
   }
 
-  synchronized void createEditLogFile(File name) throws IOException {
-    waitForSyncToFinish();
-
+  /**
+   * Add an edit stream to transfer edits to the backup node.
+   * 
+   * Note that the beginning of the stream will start in the middle of some
+   * edit file, so the backup node should throw them away until it gets a
+   * OP_ROLL message.
+   */
+  synchronized void addBackupStream(
+      NamenodeRegistration bnReg, NamenodeRegistration nnReg) throws IOException {
+    EditLogOutputStream boStream = new EditLogBackupOutputStream(bnReg, nnReg);
+    editStreams.add(boStream);
+  }
+  
+  static void createEditLogFile(File name) throws IOException {
+    if (name.exists()) {
+      throw new IOException("Refusing to overwrite edits file at " + name);
+    }
     EditLogOutputStream eStream = new EditLogFileOutputStream(name,
-        sizeOutputFlushBuffer);
+        DEFAULT_OUTPUT_FLUSH_BUFFER);
     eStream.create();
     eStream.close();
   }
@@ -226,7 +261,8 @@ public class FSEditLog {
     }
     printStatistics(true);
     numTransactions = totalTimeTransactions = numTransactionsBatchedInSync = 0;
-
+    currentLogIndex = -1;
+    
     ArrayList<EditLogOutputStream> errorStreams = null;
     Iterator<EditLogOutputStream> it = getOutputStreamIterator(null);
     while(it.hasNext()) {
@@ -312,8 +348,7 @@ public class FSEditLog {
     // removed failed SDs
     if(propagate && al != null) fsimage.processIOError(al, false);
     
-    //for the rest of the streams
-    if(propagate) incrementCheckpointTime();
+    // TODO roll here, maybe only if propagate true?
     
     lsd = fsimage.listStorageDirectories();
     FSNamesystem.LOG.info("at the end current list of storage dirs:" + lsd);
@@ -352,13 +387,6 @@ public class FSEditLog {
         return es;
     }
     return null;
-  }
-
-  /**
-   * check if edits.new log exists in the specified stoorage directory
-   */
-  boolean existsNew(StorageDirectory sd) {
-    return getEditNewFile(sd).exists(); 
   }
 
   /**
@@ -825,13 +853,56 @@ public class FSEditLog {
   }
 
   /**
-   * Return the size of the current EditLog
+   * Return the size of the current EditLog starting with the
+   * log at the given index
+   *
+   * @param startLogIndex the index to start counting from, typically
+   * the index of the current image
    */
-  synchronized long getEditLogSize() throws IOException {
+  synchronized long getTotalEditLogSize(int startLogIndex) throws IOException {
     assert getNumEditsDirs() <= getNumEditStreams() : 
         "Number of edits directories should not exceed the number of streams.";
     long size = 0;
+
+    for (int logIndex = startLogIndex; logIndex < currentLogIndex; logIndex++) {
+      size += getSingleEditLogSize(logIndex);
+    }
+    size += getCurrentEditLogSize();
+    return size;
+  }
+
+  private synchronized long getSingleEditLogSize(int logIndex) throws IOException {
+    Iterator<StorageDirectory> it = fsimage.dirIterator(NameNodeDirType.EDITS);
+    if(!it.hasNext()) 
+      throw new IOException("No storage directories!");
+
+    long size = 0;
+    boolean gotValid = false;
+    while(it.hasNext()) {
+      StorageDirectory sd = it.next();
+      File f = FSImage.getFinalizedEditsFile(sd, logIndex);
+      if (f.exists()) {
+        long curSize = f.length();
+        assert (size == 0 || size == curSize || curSize ==0) :
+        "Wrong streams size";
+        size = Math.max(size, curSize);
+        gotValid = true;
+      }
+    }
+
+    if (!gotValid) {
+      throw new IOException("No valid edit logs for edits index " + logIndex);
+    }
+
+    return size;
+  }
+
+  /**
+   * Return the size in bytes of the edit log currently being written
+   */
+  private synchronized long getCurrentEditLogSize() {
     ArrayList<EditLogOutputStream> al = null;
+    long size = 0;
     for (int idx = 0; idx < getNumEditStreams(); idx++) {
       EditLogOutputStream es = editStreams.get(idx);
       try {
@@ -840,8 +911,8 @@ public class FSEditLog {
           "Wrong streams size";
         size = Math.max(size, curSize);
       } catch (IOException e) {
-        FSImage.LOG.warn("getEditLogSize: editstream.length failed. removing editlog (" +
-            idx + ") " + es.getName());
+        FSImage.LOG.warn("getCurrentEditLogSize: editstream.length failed. " +
+                         "Removing editlog (" + idx + ") " + es.getName());
         if(al==null) al = new ArrayList<EditLogOutputStream>(1);
         al.add(es);
       }
@@ -851,83 +922,171 @@ public class FSEditLog {
   }
   
   /**
-   * Closes the current edit log and opens edits.new. 
+   * Closes the current edit log and opens a new one.
+   * Returns the index of the new edit log being written
+   * @param expectedNewIndex the index to roll to - used as a safeguard
+   * that the image agrees with the edit log about current index
    */
-  synchronized void rollEditLog() throws IOException {
+  synchronized void rollEditLog(int expectedNewIndex) throws IOException {
     waitForSyncToFinish();
     Iterator<StorageDirectory> it = fsimage.dirIterator(NameNodeDirType.EDITS);
     if(!it.hasNext()) 
-      return;
-    //
-    // If edits.new already exists in some directory, verify it
-    // exists in all directories.
-    //
-    boolean alreadyExists = existsNew(it.next());
+      throw new IOException("No storage directories!");
+
+    if (FSImage.LOG.isDebugEnabled()) {
+      FSImage.LOG.debug("Rolling edit log, current index = " + currentLogIndex + ", next expected index = " + expectedNewIndex);
+    }
+    int nextIndex = currentLogIndex + 1;
+    if (expectedNewIndex != nextIndex) {
+      throw new IOException("Image wanted to roll to edit #" + expectedNewIndex +
+          " but edit log expected index " + nextIndex);
+    }
+    // Check that we don't already have an edit log with the new index
+    // in any of our directories. This is all a sanity check and could be
+    // turned into assertions if it becomes a bottleneck.
+
     while(it.hasNext()) {
       StorageDirectory sd = it.next();
-      if(alreadyExists != existsNew(sd))
-        throw new IOException(getEditNewFile(sd) 
-              + "should " + (alreadyExists ? "" : "not ") + "exist.");
-    }
-    if(alreadyExists)
-      return; // nothing to do, edits.new exists!
-
-    // check if any of failed storage is now available and put it back
-    fsimage.attemptRestoreRemovedStorage();
-
-    divertFileStreams(
-        Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS_NEW.getName());
-  }
-
-  /**
-   * Divert file streams from file edits to file edits.new.<p>
-   * Close file streams, which are currently writing into edits files.
-   * Create new streams based on file getRoot()/dest.
-   * @param dest new stream path relative to the storage directory root.
-   * @throws IOException
-   */
-  synchronized void divertFileStreams(String dest) throws IOException {
-    waitForSyncToFinish();
-
-    assert getNumEditStreams() >= getNumEditsDirs() :
-      "Inconsistent number of streams";
-    ArrayList<EditLogOutputStream> errorStreams = null;
-    EditStreamIterator itE = 
-      (EditStreamIterator)getOutputStreamIterator(JournalType.FILE);
-    Iterator<StorageDirectory> itD = 
-      fsimage.dirIterator(NameNodeDirType.EDITS);
-    while(itE.hasNext() && itD.hasNext()) {
-      EditLogOutputStream eStream = itE.next();
-      StorageDirectory sd = itD.next();
-      if(!eStream.getName().startsWith(sd.getRoot().getPath()))
-        throw new IOException("Inconsistent order of edit streams: " + eStream);
-      try {
-        // close old stream
-        closeStream(eStream);
-        // create new stream
-        eStream = new EditLogFileOutputStream(new File(sd.getRoot(), dest),
-            sizeOutputFlushBuffer);
-        eStream.create();
-        // replace by the new stream
-        itE.replace(eStream);
-      } catch (IOException e) {
-        FSNamesystem.LOG.warn("Error in editStream " + eStream.getName(), e);
-        if(errorStreams == null)
-          errorStreams = new ArrayList<EditLogOutputStream>(1);
-        errorStreams.add(eStream);
+      // Current finalized file should not exist
+      if (FSImage.existsFinalizedEditsFile(sd, currentLogIndex)) {
+        throw new IOException(FSImage.getFinalizedEditsFile(sd, currentLogIndex) + "should not exist");
+      }
+      // New finalized file should not exist
+      if (FSImage.existsFinalizedEditsFile(sd, nextIndex)) {
+        throw new IOException(FSImage.getFinalizedEditsFile(sd, nextIndex) + "should not exist");
+      }
+      // New in progress file should not exist
+      if (FSImage.existsInProgressEditsFile(sd, nextIndex)) {
+        throw new IOException(FSImage.getInProgressEditsFile(sd, nextIndex) + "should not exist");
       }
     }
-    processIOError(errorStreams, true);
+
+    // check if any of failed storage is now available and put it back
+    fsimage.attemptRestoreRemovedStorage(nextIndex);
+    divertFileStreams(currentLogIndex);
+    FSImage.LOG.info("====> Telling slaves that we rolled our logs to " + nextIndex);
+    logEdit(Ops.OP_ROLL_LOGS, new IntWritable(nextIndex));
+    currentLogIndex = nextIndex;
   }
 
   /**
-   * Removes the old edit log and renames edits.new to edits.
-   * Reopens the edits file.
+   * For any edits files that were in progress, try to recover them.
+   * The logic is as follows:
+   *
+   * For each log index:
+   * If there are any finalized logs:
+   *   delete/move aside any inprogress logs
+   * If there are no finalized logs, but there are in progress logs
+   *   try to recover the set
+
    */
-  synchronized void purgeEditLog() throws IOException {
-    waitForSyncToFinish();
-    revertFileStreams(
-        Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS_NEW.getName());
+  static void recoverInProgressLogs(
+      FSImage fsimage,
+      int startIndex,
+      int endIndex) throws IOException {
+    for (int i = startIndex; i <= endIndex; i++) {
+      boolean hasInProgress = false;
+      boolean hasFinalized = false;
+
+      // Scan all dirs to figure out what state is available
+      Iterator<StorageDirectory> it = fsimage.dirIterator(NameNodeDirType.EDITS);
+      while (it.hasNext()) {
+        StorageDirectory sd = it.next();
+
+        boolean thisDirHasFinalized = FSImage.existsFinalizedEditsFile(sd, i);
+        boolean thisDirHasInProgress = FSImage.existsInProgressEditsFile(sd, i);
+
+        // Sanity check that we have one or the other but not both
+        if (thisDirHasFinalized && thisDirHasInProgress) {
+          throw new IOException(
+            "Bad state in dir " + sd.getRoot() + ": " +
+            "both finalized and in progress logs exist for " +
+            "index " + i);
+        }
+
+        hasInProgress = hasInProgress || thisDirHasInProgress;
+        hasFinalized = hasFinalized || thisDirHasFinalized;
+      }
+
+      // If we have both finalized and unfinalized, then the finalized ones
+      // are correct, and the unfinalized ones are from directories that
+      // were failed during the course of writing the log
+      if (hasInProgress && hasFinalized) {
+        it = fsimage.dirIterator(NameNodeDirType.EDITS);
+        while (it.hasNext()) {
+          StorageDirectory sd = it.next();
+          if (FSImage.existsInProgressEditsFile(sd, i)) {
+            markPossiblyCorruptInProgressEditsFile(sd, i);
+          }
+        }
+      }
+
+      // If we have only inprogress, then we can finalize all of them.
+      // TODO: here is the opportunity to do consistency checks and
+      // synchronize the files (eg in case we crashed while one has synced
+      // and another hasn't)
+      if (hasInProgress && !hasFinalized) {
+        it = fsimage.dirIterator(NameNodeDirType.EDITS);
+        while (it.hasNext()) {
+          StorageDirectory sd = it.next();
+          if (FSImage.existsInProgressEditsFile(sd, i)) {
+            finalizeEditsFile(sd, i);
+          }
+        }
+      }
+
+      // If we have neither inprogress nor finalized, then we have no logs
+      // for this index, and we must abort
+      if (!hasInProgress && !hasFinalized) {
+        throw new IOException("Could not recover logs for index " + i +
+          ": no finalized or inprogress edits files found in storage dirs!");
+      }
+    }
+  }
+
+  /**
+   * Mark an inprogress edit file as possibly corrupt.
+   * We should be able to delete these files, but to be extra safe we just move
+   * them aside and lazily GC them later.
+   */
+  private static void markPossiblyCorruptInProgressEditsFile(StorageDirectory sd, int index)
+    throws IOException {
+    File f = FSImage.getFinalizedEditsFile(sd, index);
+    FSImage.LOG.warn("Marking possibly corrupt edits file " + f);
+
+    Storage.rename(f, new File(f.getParentFile(), f.getName() + ".corrupt"));
+  }
+
+
+  private static void finalizeEditsFile(StorageDirectory sd, int index)
+    throws IOException
+  {
+    FSImage.LOG.info("Finalizing edits file #" + index + " in " + sd.getRoot());
+    File inProgressFile = FSImage.getInProgressEditsFile(sd, index);
+    File finalizedFile = FSImage.getFinalizedEditsFile(sd, index);
+
+    if (finalizedFile.exists()) {
+      throw new IOException(
+        "Can't finalize file " + inProgressFile +
+        " since target " + finalizedFile + " exists");
+    }
+
+    if(!inProgressFile.renameTo(finalizedFile)) {
+      throw new IOException("Finalization of edits file " + 
+                            index + " failed for " + sd.getRoot());
+    }
+  }
+  
+  // TODO move these functions into FSImage, so FSEditLog is only doing
+  // writing stuff?
+  static void finalizeEditsFile(Storage storage, int index)
+    throws IOException {
+    Iterator<StorageDirectory> itD = 
+      storage.dirIterator(NameNodeDirType.EDITS);
+    while (itD.hasNext()) {
+      StorageDirectory sd = itD.next();
+      finalizeEditsFile(sd, index);
+    }
   }
 
 
@@ -945,18 +1104,17 @@ public class FSEditLog {
   }
 
   /**
-   * Revert file streams from file edits.new back to file edits.<p>
-   * Close file streams, which are currently writing into getRoot()/source.
-   * Rename getRoot()/source to edits.
-   * Reopen streams so that they start writing into edits files.
+   * Divert file streams from file edits to file edits.new.<p>
+   * Close file streams, which are currently writing into edits files.
+   * Create new streams based on file getRoot()/dest.
    * @param dest new stream path relative to the storage directory root.
    * @throws IOException
    */
-  synchronized void revertFileStreams(String source) throws IOException {
-    waitForSyncToFinish();
-
+  synchronized void divertFileStreams(int oldIndex) throws IOException {
     assert getNumEditStreams() >= getNumEditsDirs() :
       "Inconsistent number of streams";
+    waitForSyncToFinish();
+
     ArrayList<EditLogOutputStream> errorStreams = null;
     EditStreamIterator itE = 
       (EditStreamIterator)getOutputStreamIterator(JournalType.FILE);
@@ -965,28 +1123,26 @@ public class FSEditLog {
     while(itE.hasNext() && itD.hasNext()) {
       EditLogOutputStream eStream = itE.next();
       StorageDirectory sd = itD.next();
-      if(!eStream.getName().startsWith(sd.getRoot().getPath()))
-        throw new IOException("Inconsistent order of edit streams: " + eStream +
-                              " does not start with " + sd.getRoot().getPath());
+
+      // Check that the edit stream is pointing to a file inside the
+      // storage directory.
+      if(!eStream.getName().startsWith(sd.getRoot().getPath())) {
+        throw new IOException("Inconsistent order of edit streams: " +
+          "log " + eStream.getName() + " does not start with root " +
+          sd.getRoot().getPath());
+      }
+
       try {
         // close old stream
         closeStream(eStream);
-        // rename edits.new to edits
-        File editFile = getEditFile(sd);
-        File prevEditFile = new File(sd.getRoot(), source);
-        if(prevEditFile.exists()) {
-          if(!prevEditFile.renameTo(editFile)) {
-            //
-            // renameTo() fails on Windows if the destination
-            // file exists.
-            //
-            if(!editFile.delete() || !prevEditFile.renameTo(editFile)) {
-              throw new IOException("Rename failed for " + sd.getRoot());
-            }
-          }
-        }
-        // open new stream
-        eStream = new EditLogFileOutputStream(editFile, sizeOutputFlushBuffer);
+
+        finalizeEditsFile(sd, oldIndex);
+
+        // create new stream
+        eStream = new EditLogFileOutputStream(
+          FSImage.getInProgressEditsFile(sd, oldIndex + 1),
+          sizeOutputFlushBuffer);
+        eStream.create();
         // replace by the new stream
         itE.replace(eStream);
       } catch (IOException e) {
@@ -1002,25 +1158,17 @@ public class FSEditLog {
   /**
    * Return the name of the edit file
    */
+  @Deprecated
   synchronized File getFsEditName() {
-    StorageDirectory sd = null;   
-    for (Iterator<StorageDirectory> it = 
-      fsimage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      sd = it.next();   
-      if(sd.getRoot().canRead())
-        return getEditFile(sd);
-    }
-    return null;
+    throw new RuntimeException("TODO");
   }
 
   /**
    * Returns the timestamp of the edit log
+   * TODO rename me
    */
   synchronized long getFsEditTime() {
-    Iterator<StorageDirectory> it = fsimage.dirIterator(NameNodeDirType.EDITS);
-    if(it.hasNext())
-      return getEditFile(it.next()).lastModified();
-    return 0;
+    return currentLogIndex;
   }
 
   // sets the initial capacity of the flush buffer.
@@ -1028,41 +1176,10 @@ public class FSEditLog {
     sizeOutputFlushBuffer = size;
   }
 
-
   boolean isEmpty() throws IOException {
-    return getEditLogSize() <= 0;
-  }
-
-  /**
-   * Create (or find if already exists) an edit output stream, which
-   * streams journal records (edits) to the specified backup node.<br>
-   * Send a record, prescribing to start journal spool.<br>
-   * This should be sent via regular stream of journal records so that
-   * the backup node new exactly after which record it should start spooling.
-   * 
-   * @param bnReg the backup node registration information.
-   * @param nnReg this (active) name-node registration.
-   * @throws IOException
-   */
-  synchronized void logJSpoolStart(NamenodeRegistration bnReg, // backup node
-                      NamenodeRegistration nnReg) // active name-node
-  throws IOException {
-    if(bnReg.isRole(NamenodeRole.CHECKPOINT))
-      return; // checkpoint node does not stream edits
-    if(editStreams == null)
-      editStreams = new ArrayList<EditLogOutputStream>();
-    EditLogOutputStream boStream = null;
-    for(EditLogOutputStream eStream : editStreams) {
-      if(eStream.getName().equals(bnReg.getAddress())) {
-        boStream = eStream; // already there
-        break;
-      }
-    }
-    if(boStream == null) {
-      boStream = new EditLogBackupOutputStream(bnReg, nnReg);
-      editStreams.add(boStream);
-    }
-    logEdit(Ops.OP_JSPOOL_START, (Writable[])null);
+    // TODO used? wouldn't this always be at least 4? (hdr len)
+    // is Current really what we want? in what context is this used
+    return getCurrentEditLogSize() == 0;
   }
 
   /**
@@ -1157,12 +1274,6 @@ public class FSEditLog {
     eStream.close();
   }
 
-  void incrementCheckpointTime() {
-    fsimage.incrementCheckpointTime();
-    Writable[] args = {new LongWritable(fsimage.getCheckpointTime())};
-    logEdit(Ops.OP_CHECKPOINT_TIME, args);
-  }
-
   synchronized void releaseBackupStream(NamenodeRegistration registration) {
     Iterator<EditLogOutputStream> it =
                                   getOutputStreamIterator(JournalType.BACKUP);
@@ -1183,6 +1294,12 @@ public class FSEditLog {
     processIOError(errorStreams, true);
   }
 
+  /**
+   * Return whether a given backup node is allowed to register
+   * with the NN. This prevents multiple BNs from registering with
+   * the same NN.
+   * @return true if the registration should be allowed.
+   */
   synchronized boolean checkBackupRegistration(
       NamenodeRegistration registration) {
     Iterator<EditLogOutputStream> it =

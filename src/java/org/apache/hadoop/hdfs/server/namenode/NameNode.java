@@ -333,7 +333,7 @@ public class NameNode implements NamenodeProtocols, FSConstants {
     nodeRegistration = new NamenodeRegistration(
         getHostPortString(rpcAddress),
         getHostPortString(httpAddress),
-        getFSImage(), getRole(), getFSImage().getCheckpointTime());
+        getFSImage(), getRole(), getFSImage().getNewestImageIndex());
     return nodeRegistration;
   }
 
@@ -661,7 +661,7 @@ public class NameNode implements NamenodeProtocols, FSConstants {
   public NamenodeRegistration register(NamenodeRegistration registration)
   throws IOException {
     verifyVersion(registration.getVersion());
-    namesystem.registerBackupNode(registration);
+    namesystem.registerBackupNode(registration, setRegistration());
     return setRegistration();
   }
 
@@ -1101,8 +1101,8 @@ public class NameNode implements NamenodeProtocols, FSConstants {
    * Roll the image 
    */
   @Deprecated
-  public void rollFsImage() throws IOException {
-    namesystem.rollFSImage();
+  public void rollFsImage(CheckpointSignature sig) throws IOException {
+    namesystem.rollFSImage(sig);
   }
     
   public void finalizeUpgrade() throws IOException {
@@ -1314,23 +1314,8 @@ public class NameNode implements NamenodeProtocols, FSConstants {
       throw new IncorrectVersionException(version, "data node");
   }
 
-  /**
-   * Returns the name of the fsImage file
-   */
-  public File getFsImageName() throws IOException {
-    return getFSImage().getFsImageName();
-  }
-    
   public FSImage getFSImage() {
     return namesystem.dir.fsImage;
-  }
-
-  /**
-   * Returns the name of the fsImage file uploaded by periodic
-   * checkpointing
-   */
-  public File[] getFsImageNameCheckpoint() throws IOException {
-    return getFSImage().getFsImageNameCheckpoint();
   }
 
   /**

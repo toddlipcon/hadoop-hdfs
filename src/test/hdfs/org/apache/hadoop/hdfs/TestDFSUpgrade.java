@@ -22,6 +22,7 @@ import static org.apache.hadoop.hdfs.server.common.HdfsConstants.NodeType.NAME_N
 
 import java.io.File;
 import java.io.IOException;
+import java.io.FilenameFilter;
 
 import junit.framework.TestCase;
 
@@ -69,9 +70,12 @@ public class TestDFSUpgrade extends TestCase {
       for (int i = 0; i < baseDirs.length; i++) {
         assertTrue(new File(baseDirs[i],"current").isDirectory());
         assertTrue(new File(baseDirs[i],"current/VERSION").isFile());
-        assertTrue(new File(baseDirs[i],"current/edits").isFile());
-        assertTrue(new File(baseDirs[i],"current/fsimage").isFile());
-        assertTrue(new File(baseDirs[i],"current/fstime").isFile());
+
+        String[] editsfiles = new File(baseDirs[i], "current").list(new DFSTestUtil.InprogressEditsFilenameFilter());
+        assertTrue(editsfiles.length == 1);
+
+        String[] imagefiles = new File(baseDirs[i], "current").list(new DFSTestUtil.ImageFilenameFilter());
+        assertTrue(imagefiles.length != 0);
       }
       break;
     case DATA_NODE:
@@ -212,18 +216,23 @@ public class TestDFSUpgrade extends TestCase {
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
       UpgradeUtilities.createEmptyDirs(dataNodeDirs);
 
-      log("NameNode upgrade with no edits file", numDirs);
-      baseDirs = UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "current");
+      /** Post HDFS-1073, the name node can start without a edit log. Previous to this it would fail on FSImage.java:L979
+
+        log("NameNode upgrade with no edits file", numDirs);
+        baseDirs = UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "current");
       for (File f : baseDirs) { 
-        FileUtil.fullyDelete(new File(f,"edits"));
+        FileUtil.fullyDelete(new File(f,"edits_inprogress_0"));
       }
       startNameNodeShouldFail(StartupOption.UPGRADE);
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
-      
+      */
+
       log("NameNode upgrade with no image file", numDirs);
       baseDirs = UpgradeUtilities.createStorageDirs(NAME_NODE, nameNodeDirs, "current");
       for (File f : baseDirs) { 
-        FileUtil.fullyDelete(new File(f,"fsimage")); 
+        for (File fsimage : f.listFiles(new DFSTestUtil.ImageFilenameFilter())) {
+          FileUtil.fullyDelete(fsimage); 
+        }
       }
       startNameNodeShouldFail(StartupOption.UPGRADE);
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);

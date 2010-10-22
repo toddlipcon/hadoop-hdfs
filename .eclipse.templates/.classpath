@@ -24,8 +24,8 @@
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jasper-compiler-5.5.12.jar"/>
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jasper-runtime-5.5.12.jar"/>
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jets3t-0.7.1.jar"/>
-	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jetty-6.1.14.jar"/>
-	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jetty-util-6.1.14.jar"/>
+	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jetty-6.1.22.jar"/>
+	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jetty-util-6.1.22.jar"/>
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jsp-2.1-6.1.14.jar"/>
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/jsp-api-2.1-6.1.14.jar"/>
 	<classpathentry kind="lib" path="build/ivy/lib/Hadoop-Hdfs/common/junit-4.8.1.jar"/>

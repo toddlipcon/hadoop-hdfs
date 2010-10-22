@@ -22,6 +22,7 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileReader;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLConnection;
@@ -61,7 +62,43 @@ public class DFSTestUtil {
   private int maxSize;// = 8*1024;
   private int nFiles;
   private MyFile[] files;
+
+  /**
+     Filter to list all the image files in a directory
+  */
+  public static class ImageFilenameFilter implements FilenameFilter {
+    public boolean accept(File dir, String name) {
+      if (new File(dir, name).isFile()) {
+        return name.matches("fsimage_\\d+");
+      }
+      return false;
+    }
+  };
   
+  /** 
+      Filter to list all the edits files in a directory
+  */
+  public static class EditsFilenameFilter implements FilenameFilter {
+    public boolean accept(File dir, String name) {
+      if (new File(dir, name).isFile()) {
+        return name.matches("edits_\\d+");
+      }
+      return false;
+    }
+  };
+
+  /** 
+      Filter to list all the in progress edits files in a directory
+  */
+  public static class InprogressEditsFilenameFilter implements FilenameFilter {
+    public boolean accept(File dir, String name) {
+      if (new File(dir, name).isFile()) {
+        return name.matches("edits_inprogress_\\d+");
+      }
+      return false;
+    }
+  };
+
   /** Creates a new instance of DFSTestUtil
    *
    * @param testName Name of the test from where this utility is used
