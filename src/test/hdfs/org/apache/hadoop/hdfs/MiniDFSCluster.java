@@ -754,7 +754,11 @@ public class MiniDFSCluster {
    * Shut down the servers that are up.
    */
   public void shutdown() {
-    System.out.println("Shutting down the Mini HDFS Cluster");
+    System.out.println(
+      "\n\n"+
+      "**********************************************************************\n" +
+      "Shutting down the Mini HDFS Cluster\n" +
+      "**********************************************************************\n");
     shutdownDataNodes();
     if (nameNode != null) {
       nameNode.stop();
