@@ -93,7 +93,7 @@ class FSImageWriter {
       out.close();
     }
 
-    LOG.info("Image file of size " + newFile.length() + " saved in " 
+    LOG.info("Image file " + newFile + " of size " + newFile.length() + " saved in " 
         + (now() - startTime)/1000 + " seconds.");
   }
 

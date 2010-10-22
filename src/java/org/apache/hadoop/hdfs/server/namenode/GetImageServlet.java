@@ -84,16 +84,13 @@ public class GetImageServlet extends HttpServlet {
               break;
             case PUT_IMAGE:
               nnImage.validateCheckpointUpload(ff.getToken());
-              String queryString = "getimage=" + ff.getTargetFileIndex();
-              TransferFsImage.getFileClient(ff.getInfoServer(), queryString,
-                                            nnImage.getImageCheckpointFiles(ff.getTargetFileIndex()));
-
               // issue a HTTP get request to download the new fsimage 
               nnImage.validateCheckpointUpload(ff.getToken());
               reloginIfNecessary().doAs(new PrivilegedExceptionAction<Void>() {
                   @Override
                   public Void run() throws Exception {
-                    TransferFsImage.getFileClient(ff.getInfoServer(), "getimage=1", 
+                    String queryString = "getimage=" + ff.getTargetFileIndex();
+                    TransferFsImage.getFileClient(ff.getInfoServer(), queryString,
                                                   nnImage.getImageCheckpointFiles(ff.getTargetFileIndex()));
                     return null;
                   }

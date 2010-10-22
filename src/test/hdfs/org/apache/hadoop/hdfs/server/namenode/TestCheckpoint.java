@@ -747,7 +747,7 @@ public class TestCheckpoint extends TestCase {
     DistributedFileSystem fs = null;
     try {
       Configuration conf = new HdfsConfiguration();
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDatanodes).format(false).build();
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDatanodes).format(true).build();
       cluster.waitActive();
       fs = (DistributedFileSystem)(cluster.getFileSystem());
 
