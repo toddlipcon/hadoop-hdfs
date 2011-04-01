@@ -1145,14 +1145,6 @@ public class NameNode implements NamenodeProtocols, FSConstants {
   public CheckpointSignature rollEditLog() throws IOException {
     return namesystem.rollEditLog();
   }
-
-  /**
-   * Roll the image 
-   */
-  @Deprecated @Override
-  public void rollFsImage(CheckpointSignature sig) throws IOException {
-    namesystem.rollFSImage(sig);
-  }
   
   @Override
   public RemoteEditLogManifest getEditLogManifest(long sinceTxId)
@@ -1393,20 +1385,12 @@ public class NameNode implements NamenodeProtocols, FSConstants {
   /**
    * Returns the name of the fsImage file
    */
-  public File getFsImageName() throws IOException {
-    return getFSImage().getStorage().getFsImageName();
+  public File getFsImageName(long txid) throws IOException {
+    return getFSImage().getStorage().getFsImageName(txid);
   }
     
   public FSImage getFSImage() {
     return namesystem.dir.fsImage;
-  }
-
-  /**
-   * Returns the name of the fsImage file uploaded by periodic
-   * checkpointing
-   */
-  public File[] getFsImageNameCheckpoint() throws IOException {
-    return getFSImage().getStorage().getFsImageNameCheckpoint();
   }
 
   /**

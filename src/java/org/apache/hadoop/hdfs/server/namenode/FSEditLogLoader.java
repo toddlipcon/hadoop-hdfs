@@ -533,6 +533,15 @@ public class FSEditLogLoader {
                 delegationKey);
             break;
           }
+          case OP_START_LOG_SEGMENT:
+          case OP_END_LOG_SEGMENT: { // TODO add me to offline edits viewer
+            if (logVersion > -31) {
+              throw new IOException("Unexpected opCode " + opCode
+                  + " for version " + logVersion);
+            }
+            // no data in here currently.
+            break;
+          }
           default: {
             throw new IOException("Never seen opCode " + opCode);
           }

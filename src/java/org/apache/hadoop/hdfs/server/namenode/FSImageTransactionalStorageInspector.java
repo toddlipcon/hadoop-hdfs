@@ -52,6 +52,7 @@ class FSImageTransactionalStorageInspector extends FSImageStorageInspector {
   List<FoundFSImage> foundImages = new ArrayList<FoundFSImage>();
   List<FoundEditLog> foundEditLogs = new ArrayList<FoundEditLog>();
   SortedMap<Long, LogGroup> logGroups = new TreeMap<Long, LogGroup>();
+  long maxSeenTxId = 0;
   
   private static final Pattern IMAGE_REGEX = Pattern.compile(
     NameNodeFile.IMAGE.getName() + "_(\\d+)");
@@ -130,6 +131,15 @@ class FSImageTransactionalStorageInspector extends FSImageStorageInspector {
                    "storage directory is not configured to contain edits.");
         }
       }
+      
+      // Check for a seen_txid file, which marks a minimum transaction ID that
+      // must be included in our load plan.
+      try {
+        maxSeenTxId = Math.max(maxSeenTxId, NNStorage.readTransactionIdFile(sd));
+      } catch (IOException ioe) {
+        LOG.warn("Unable to determine the max transaction ID seen by " + sd, ioe);
+      }
+      
     }
 
     // set finalized flag
@@ -181,11 +191,11 @@ class FSImageTransactionalStorageInspector extends FSImageStorageInspector {
     
     List<FoundEditLog> recoveryLogs = new ArrayList<FoundEditLog>();
     
-    Map<Long, LogGroup> usefulGroups = logGroups.tailMap(expectedTxId);
+    SortedMap<Long, LogGroup> usefulGroups = logGroups.tailMap(expectedTxId);
     LOG.debug("Excluded " + (logGroups.size() - usefulGroups.size()) + 
         " groups of logs because they start with a txid less than image " +
         "txid " + recoveryImage.txId);
-    
+
     for (Map.Entry<Long, LogGroup> entry : usefulGroups.entrySet()) {
       long logStartTxId = entry.getKey();
       LogGroup logGroup = entry.getValue();
@@ -209,6 +219,21 @@ class FSImageTransactionalStorageInspector extends FSImageStorageInspector {
         // the next group should start from.
         expectedTxId = -1;
       }
+    }
+    
+    long lastLogGroupStartTxId = usefulGroups.isEmpty() ?
+        0 : usefulGroups.lastKey();
+    if (maxSeenTxId > recoveryImage.txId &&
+        maxSeenTxId > lastLogGroupStartTxId) {
+      String msg = "At least one storage directory indicated it has seen a " +
+        "log segment starting at txid " + maxSeenTxId;
+      if (usefulGroups.isEmpty()) {
+        msg += " but there are no logs to load.";
+      } else {
+        msg += " but the most recent log file found starts with txid " +
+          lastLogGroupStartTxId;
+      }
+      throw new IOException(msg);
     }
 
     return new TransactionalLoadPlan(recoveryImage, recoveryLogs,

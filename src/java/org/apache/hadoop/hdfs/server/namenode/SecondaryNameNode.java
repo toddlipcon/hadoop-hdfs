@@ -42,11 +42,16 @@ import org.apache.hadoop.hdfs.protocol.FSConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsConstants;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
 import org.apache.hadoop.hdfs.server.common.JspHelper;
+import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageState;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
+import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.http.HttpServer;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RemoteException;
@@ -59,6 +64,8 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.StringUtils;
+
+import com.google.common.collect.Lists;
 
 /**********************************************************
  * The Secondary NameNode is a helper to the primary NameNode.
@@ -334,7 +341,8 @@ public class SecondaryNameNode implements Runnable {
    * @return true if a new image has been downloaded and needs to be loaded
    * @throws IOException
    */
-  private boolean downloadCheckpointFiles(final CheckpointSignature sig
+  private boolean downloadCheckpointFiles(final CheckpointSignature sig,
+                                          final RemoteEditLogManifest manifest
                                       ) throws IOException {
     try {
         Boolean b = UserGroupInformation.getCurrentUser().doAs(
@@ -342,19 +350,23 @@ public class SecondaryNameNode implements Runnable {
   
           @Override
           public Boolean run() throws Exception {
+            checkpointImage.getStorage().cTime = sig.cTime;
+            // TODO checkpointImage.getStorage().setCheckpointTime(sig.checkpointTime);
+
             // get fsimage
-            String fileid;
             Collection<File> list;
             File[] srcNames;
             boolean downloadImage = true;
-            if (sig.imageDigest.equals(
-                    checkpointImage.getStorage().imageDigest)) {
+            if (sig.lastCheckpointTxId ==
+                checkpointImage.getStorage().getCheckpointTxId()) {
               downloadImage = false;
               LOG.info("Image has not changed. Will not download image.");
             } else {
-              fileid = "getimage=1";
-              list = checkpointImage.getStorage().getFiles(
-                  NameNodeFile.IMAGE, NameNodeDirType.IMAGE);
+              String fileid = GetImageServlet.getParamStringForImage(sig.lastCheckpointTxId);
+              
+              String fileName = NNStorage.getCheckpointImageFileName(sig.lastCheckpointTxId);
+              list = getFSImage().getStorage().getFiles(
+                  NameNodeDirType.IMAGE, fileName);
               srcNames = list.toArray(new File[list.size()]);
               assert srcNames.length > 0 : "No checkpoint targets.";
               TransferFsImage.getFileClient(fsName, fileid, srcNames, false);
@@ -364,16 +376,22 @@ public class SecondaryNameNode implements Runnable {
             }
         
             // get edits file
-            fileid = "getedit=1";
-            list = getFSImage().getStorage().getFiles(
-                NameNodeFile.EDITS, NameNodeDirType.EDITS);
-            srcNames = list.toArray(new File[list.size()]);;
-            assert srcNames.length > 0 : "No checkpoint targets.";
-            TransferFsImage.getFileClient(fsName, fileid, srcNames, false);
-            LOG.info("Downloaded file " + srcNames[0].getName() + " size " +
-                srcNames[0].length() + " bytes.");
+            for (RemoteEditLog log : manifest.getLogs()) {
+              String fileid =
+                GetImageServlet.getParamStringForLog(log);
+              String fileName = NNStorage.getFinalizedEditsFileName(
+                  log.getStartTxId(), log.getEndTxId());
+              list = getFSImage().getStorage().getFiles(
+                  NameNodeDirType.EDITS, fileName);
+              srcNames = list.toArray(new File[list.size()]);;
+              assert srcNames.length > 0 : "No checkpoint targets.";
+              TransferFsImage.getFileClient(fsName, fileid, srcNames, false);
+              LOG.info("Downloaded file " + srcNames[0].getName() + " size " +
+                  srcNames[0].length() + " bytes.");
+                
+            }
         
-            checkpointImage.checkpointUploadDone();
+            checkpointImage.checkpointUploadDone(sig.lastCheckpointTxId, sig.getImageDigest());
             return Boolean.valueOf(downloadImage);
           }
         });
@@ -390,8 +408,8 @@ public class SecondaryNameNode implements Runnable {
   /**
    * Copy the new fsimage into the NameNode
    */
-  private void putFSImage(CheckpointSignature sig) throws IOException {
-    String fileid = "putimage=1&port=" + imagePort +
+  private void putFSImage(CheckpointSignature sig, long txid) throws IOException {
+    String fileid = "putimage=1&txid=" + txid + "&port=" + imagePort +
       "&machine=" + infoBindAddress + 
       "&token=" + sig.toString() +
       "&newChecksum=" + checkpointImage.getStorage().getImageDigest();
@@ -443,14 +461,22 @@ public class SecondaryNameNode implements Runnable {
                             "after creating edits.new");
     }
 
-    boolean loadImage = downloadCheckpointFiles(sig);   // Fetch fsimage and edits
-    doMerge(sig, loadImage);                   // Do the merge
+    RemoteEditLogManifest manifest =
+      namenode.getEditLogManifest(sig.lastCheckpointTxId + 1);
+    assert !manifest.getLogs().isEmpty();
+    assert manifest.getLogs().get(0).getStartTxId() == sig.lastCheckpointTxId + 1 :
+      "Bad edit log manifest (expected txid = " + (sig.lastCheckpointTxId + 1) +
+      ": " + manifest;
+
+    boolean loadImage = downloadCheckpointFiles(sig, manifest);   // Fetch fsimage and edits
+    doMerge(sig, manifest, loadImage);                   // Do the merge
   
     //
     // Upload the new image into the NameNode. Then tell the Namenode
     // to make this new uploaded image as the most current image.
     //
-    putFSImage(sig);
+    long txid = checkpointImage.getStorage().getCheckpointTxId();
+    putFSImage(sig, txid);
 
     // error simulation code for junit test
     if (ErrorSimulator.getErrorSimulation(1)) {
@@ -458,33 +484,31 @@ public class SecondaryNameNode implements Runnable {
                             "after uploading new image to NameNode");
     }
 
-    namenode.rollFsImage(sig);
     checkpointImage.endCheckpoint();
 
     LOG.warn("Checkpoint done. New Image Size: " 
-             + checkpointImage.getStorage().getFsImageName().length());
+             + checkpointImage.getStorage().getFsImageName(txid).length());
     
     return loadImage;
   }
 
   private void startCheckpoint() throws IOException {
-    checkpointImage.getStorage().unlockAll();
-    checkpointImage.getEditLog().close();
-    checkpointImage.recoverCreate(checkpointDirs, checkpointEditsDirs);
     checkpointImage.startCheckpoint();
   }
 
   /**
    * Merge downloaded image and edits and write the new image into
    * current storage directory.
+   * @param manifest 
    */
-  private void doMerge(CheckpointSignature sig, boolean loadImage)
+  private void doMerge(
+      CheckpointSignature sig, RemoteEditLogManifest manifest, boolean loadImage)
   throws IOException {
     if (loadImage) {
       namesystem = new FSNamesystem(checkpointImage, conf);
     }
     assert namesystem.dir.fsImage == checkpointImage;
-    checkpointImage.doMerge(sig, loadImage);
+    checkpointImage.doMerge(sig, manifest, loadImage);
   }
 
   /**
@@ -691,10 +715,13 @@ public class SecondaryNameNode implements Runnable {
 
     /**
      * Merge image and edits, and verify consistency with the signature.
+     * @param manifest 
      */
-    private void doMerge(CheckpointSignature sig, boolean loadImage)
+    private void doMerge(CheckpointSignature sig,
+                         RemoteEditLogManifest manifest,
+                         boolean loadImage)
     throws IOException {
-      getEditLog().open();
+      //getEditLog().open(); TODO
       StorageDirectory sdName = null;
       StorageDirectory sdEdits = null;
       Iterator<StorageDirectory> it = null;
@@ -714,17 +741,24 @@ public class SecondaryNameNode implements Runnable {
       
       this.getStorage().setStorageInfo(sig);
       if (loadImage) {
-        loadFSImage(getStorage().getStorageFile(sdName, NameNodeFile.IMAGE),
-            sig.getImageDigest());
+        File file = getStorage().getExistingImageFile(sig.lastCheckpointTxId);
+        LOG.info("2NN loading image from " + file);
+        loadFSImage(file, sig.getImageDigest());
       }
-      List<File> editsFiles =
-        FSImageOldStorageInspector.getEditsInStorageDir(sdEdits);
+      List<File> editsFiles = Lists.newArrayList();
+      for (RemoteEditLog log : manifest.getLogs()) {
+        File f = getStorage().getExistingFinalizedEditsFile(
+            log.getStartTxId(), log.getEndTxId());
+        editsFiles.add(f);
+      }
+      LOG.info("2NN merging...");
       loadEdits(editsFiles);
       
       storage.setClusterID(sig.getClusterID());
       storage.setBlockPoolID(sig.getBlockpoolID());
       sig.validateStorageInfo(this);
-      saveNamespace(false);
+      saveFSImageInAllDirs(editLog.getLastWrittenTxId());
+      getStorage().writeAll();
     }
   }
 }

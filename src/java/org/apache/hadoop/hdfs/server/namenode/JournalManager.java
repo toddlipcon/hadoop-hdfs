@@ -21,6 +21,8 @@ import java.io.IOException;
 
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 
+import com.google.common.annotations.VisibleForTesting;
+
 /**
  * A JournalManager is responsible for managing a single place of storing
  * edit logs. It may correspond to multiple files, a backup node, etc.
@@ -37,20 +39,11 @@ public interface JournalManager {
   StorageDirectory getStorageDirectory();
 
   /**
-   * Prepare the stream to write edits
+   * TODO
    */
-  EditLogOutputStream createStream() throws IOException;
-
-  /**
-   * Divert streams, eg to "edits.new". This will go away with 1073 TODO
-   */
-  EditLogOutputStream createDivertedStream(String dest) throws IOException;
-
-  /**
-   * Revert streams, eg by renaming edits.new back to "edits". This will go
-   * away with HDFS-1073
-   */
-  EditLogOutputStream createRevertedStream(String source) throws IOException;
+  EditLogOutputStream startLogSegment(long txId) throws IOException;
+  
+  void finalizeLogSegment(long firstTxId, long lastTxId) throws IOException;
 
   /**
    * Set the amount of memory that this stream should use to buffer edits

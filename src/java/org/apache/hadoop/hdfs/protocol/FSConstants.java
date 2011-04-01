@@ -88,10 +88,11 @@ public interface FSConstants {
   // Version is reflected in the data storage file.
   // Versions are negative.
   // Decrement LAYOUT_VERSION to define a new version.
-  public static final int LAYOUT_VERSION = -36;
+  public static final int LAYOUT_VERSION = -37;
   // Current version: 
   // -35: Adding support for block pools and multiple namenodes
   // -36: persistent transaction IDs
+  // -37: file names based on txids
 
   // Record of version numbers for specific changes:
   // Version where the edits log and image stored txn ID information
