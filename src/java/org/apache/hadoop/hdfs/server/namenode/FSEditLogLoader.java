@@ -168,7 +168,7 @@ public class FSEditLogLoader {
           break; // no more transactions
         }
 
-        if (logVersion <= -31) {
+        if (logVersion <= FSConstants.FIRST_EDITLOG_HAS_TXIDS_VERSION) {
           // Read the txid
           long thisTxId = in.readLong();
           if (thisTxId != txId + 1) {
@@ -519,6 +519,15 @@ public class FSEditLogLoader {
           delegationKey.readFields(in);
           fsNamesys.getDelegationTokenSecretManager().updatePersistedMasterKey(
               delegationKey);
+          break;
+        }
+        case OP_START_LOG_SEGMENT:
+        case OP_END_LOG_SEGMENT: { // TODO add me to offline edits viewer
+          if (logVersion > -31) {
+            throw new IOException("Unexpected opCode " + opCode
+                + " for version " + logVersion);
+          }
+          // no data in here currently.
           break;
         }
         default: {

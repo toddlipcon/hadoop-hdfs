@@ -17,10 +17,12 @@
  */
 package org.apache.hadoop.hdfs.tools.offlineEditsViewer;
 
+import java.io.EOFException;
 import java.io.IOException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
+import org.apache.hadoop.hdfs.protocol.FSConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import static org.apache.hadoop.hdfs.tools.offlineEditsViewer.Tokenizer.ByteToken;
@@ -39,7 +41,7 @@ class EditsLoaderCurrent implements EditsLoader {
 
   private static int[] supportedVersions = {
       -18, -19, -20, -21, -22, -23, -24,
-      -25, -26, -27, -28, -30, -31, -32, -33, -34 };
+      -25, -26, -27, -28, -30, -31, -32, -33, -34, -35 };
 
   private EditsVisitor v;
   private int editsVersion = 0;
@@ -63,15 +65,18 @@ class EditsLoaderCurrent implements EditsLoader {
     return false;
   }
 
+  private void visitTxId() throws IOException {
+    if (editsVersion <= FSConstants.FIRST_EDITLOG_HAS_TXIDS_VERSION) {
+      v.visitLong(EditsElement.TRANSACTION_ID);
+    }
+  }
+  
   /**
    * Visit OP_INVALID
    */
   private void visit_OP_INVALID() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
   }
-
+  
   /**
    * Visit OP_ADD
    */
@@ -93,9 +98,7 @@ class EditsLoaderCurrent implements EditsLoader {
    */
   private void visit_OP_ADD_or_OP_CLOSE(FSEditLogOpCodes editsOpCode)
     throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     IntToken opAddLength = v.visitInt(EditsElement.LENGTH);
     // this happens if the edits is not properly ended (-1 op code),
@@ -139,9 +142,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_RENAME_OLD
    */
   private void visit_OP_RENAME_OLD() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitInt(        EditsElement.LENGTH);
     v.visitStringUTF8( EditsElement.SOURCE);
@@ -153,9 +154,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_DELETE
    */
   private void visit_OP_DELETE() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitInt(        EditsElement.LENGTH);
     v.visitStringUTF8( EditsElement.PATH);
@@ -166,9 +165,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_MKDIR
    */
   private void visit_OP_MKDIR() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitInt(        EditsElement.LENGTH);
     v.visitStringUTF8( EditsElement.PATH);
@@ -188,9 +185,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SET_REPLICATION
    */
   private void visit_OP_SET_REPLICATION() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitStringUTF8(EditsElement.PATH);
     v.visitStringUTF8(EditsElement.REPLICATION);
@@ -200,9 +195,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SET_PERMISSIONS
    */
   private void visit_OP_SET_PERMISSIONS() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitStringUTF8( EditsElement.PATH);
     v.visitShort(      EditsElement.FS_PERMISSIONS);
@@ -212,9 +205,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SET_OWNER
    */
   private void visit_OP_SET_OWNER() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitStringUTF8(EditsElement.PATH);
     v.visitStringUTF8(EditsElement.USERNAME);
@@ -225,9 +216,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SET_GENSTAMP
    */
   private void visit_OP_SET_GENSTAMP() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitLong(EditsElement.GENERATION_STAMP);
   }
@@ -236,9 +225,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_TIMES
    */
   private void visit_OP_TIMES() throws IOException {
-    if(editsVersion <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitInt(        EditsElement.LENGTH);
     v.visitStringUTF8( EditsElement.PATH);
@@ -250,9 +237,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SET_QUOTA
    */
   private void visit_OP_SET_QUOTA() throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitStringUTF8( EditsElement.PATH);
     v.visitLong(       EditsElement.NS_QUOTA);
@@ -263,9 +248,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_RENAME
    */
   private void visit_OP_RENAME() throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     if(editsVersion > -21) {
       throw new IOException("Unexpected op code " + FSEditLogOpCodes.OP_RENAME
@@ -283,9 +266,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_CONCAT_DELETE
    */
   private void visit_OP_CONCAT_DELETE() throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     if(editsVersion > -22) {
       throw new IOException("Unexpected op code "
@@ -307,9 +288,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_SYMLINK
    */
   private void visit_OP_SYMLINK() throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     v.visitInt(        EditsElement.LENGTH);
     v.visitStringUTF8( EditsElement.SOURCE);
@@ -330,9 +309,7 @@ class EditsLoaderCurrent implements EditsLoader {
    * Visit OP_GET_DELEGATION_TOKEN
    */
   private void visit_OP_GET_DELEGATION_TOKEN() throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
     
     if(editsVersion > -24) {
       throw new IOException("Unexpected op code "
@@ -356,9 +333,7 @@ class EditsLoaderCurrent implements EditsLoader {
    */
   private void visit_OP_RENEW_DELEGATION_TOKEN()
     throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     if(editsVersion > -24) {
       throw new IOException("Unexpected op code "
@@ -382,9 +357,7 @@ class EditsLoaderCurrent implements EditsLoader {
    */
   private void visit_OP_CANCEL_DELEGATION_TOKEN()
     throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
 
     if(editsVersion > -24) {
       throw new IOException("Unexpected op code "
@@ -407,9 +380,7 @@ class EditsLoaderCurrent implements EditsLoader {
    */
   private void visit_OP_UPDATE_MASTER_KEY()
     throws IOException {
-    if(editsVersion  <= -31) {
-      v.visitLong(EditsElement.TRANSACTION_ID);
-    }
+    visitTxId();
     
     if(editsVersion > -24) {
       throw new IOException("Unexpected op code "
@@ -422,6 +393,23 @@ class EditsLoaderCurrent implements EditsLoader {
     VIntToken blobLengthToken = v.visitVInt(EditsElement.KEY_LENGTH);
     v.visitBlob(EditsElement.KEY_BLOB, blobLengthToken.value);
   }
+  
+  /**
+   * Visit OP_END_LOG_SEGMENT
+   */
+  private void visit_OP_END_LOG_SEGMENT()
+    throws IOException {
+    visitTxId();
+  }
+  
+  /**
+   * Visit OP_BEGIN_LOG_SEGMENT
+   */
+  private void visit_OP_START_LOG_SEGMENT()
+    throws IOException {
+    visitTxId();
+  }
+
 
   private void visitOpCode(FSEditLogOpCodes editsOpCode)
     throws IOException {
@@ -484,6 +472,12 @@ class EditsLoaderCurrent implements EditsLoader {
       case OP_UPDATE_MASTER_KEY: // 21
         visit_OP_UPDATE_MASTER_KEY();
         break;
+      case OP_END_LOG_SEGMENT: // 22
+        visit_OP_END_LOG_SEGMENT();
+        break;
+      case OP_START_LOG_SEGMENT: // 23
+        visit_OP_START_LOG_SEGMENT();
+        break;
       default:
       {
         throw new IOException("Unknown op code " + editsOpCode);
@@ -512,7 +506,17 @@ class EditsLoaderCurrent implements EditsLoader {
       do {
         v.visitEnclosingElement(EditsElement.RECORD);
 
-        ByteToken opCodeToken = v.visitByte(EditsElement.OPCODE);
+        ByteToken opCodeToken;
+        try {
+          opCodeToken = v.visitByte(EditsElement.OPCODE);
+        } catch (EOFException eof) {
+          // Getting EOF when reading the opcode is fine --
+          // it's just a finalized edits file
+          // Just fake the OP_INVALID here.
+          opCodeToken = new ByteToken(EditsElement.OPCODE);
+          opCodeToken.fromByte(FSEditLogOpCodes.OP_INVALID.getOpCode());
+          v.visit(opCodeToken);
+        }
         editsOpCode = FSEditLogOpCodes.fromByte(opCodeToken.value);
 
         v.visitEnclosingElement(EditsElement.DATA);

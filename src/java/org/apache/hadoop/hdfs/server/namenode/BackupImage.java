@@ -155,7 +155,7 @@ public class BackupImage extends FSImage {
   void loadCheckpoint(CheckpointSignature sig) throws IOException {
     // load current image and journal if it is not in memory already
     if(!editLog.isOpen())
-      editLog.open();
+      editLog.startLogSegment(0xDEADBEEF);
 
     // set storage fields
     storage.setStorageInfo(sig);
@@ -174,7 +174,7 @@ public class BackupImage extends FSImage {
 
       getFSDirectoryRootLock().writeLock();
       try { // load image under rootDir lock
-        loadFSImage(NNStorage.getStorageFile(sdName, NameNodeFile.IMAGE),
+        loadFSImage(NNStorage.getStorageFile(sdName, NameNodeFile.IMAGE, 0xDEADBEAF),
             sig.getImageDigest());
       } finally {
         getFSDirectoryRootLock().writeUnlock();
@@ -191,7 +191,7 @@ public class BackupImage extends FSImage {
    * and create empty edits.
    */
   void saveCheckpoint() throws IOException {
-    saveNamespace(false);
+    saveNamespace();
   }
 
   private FSDirectory getFSDirectoryRootLock() {
@@ -298,19 +298,18 @@ public class BackupImage extends FSImage {
                               + jsDir.getCanonicalPath());
       }
       // create edit file if missing
-      File eFile = storage.getEditFile(sd);
+      /*File eFile = storage.getEditFile(sd); TODO
       if(!eFile.exists()) {
         editLog.createEditLogFile(eFile);
-      }
+      }*/
     }
 
     if(!editLog.isOpen())
-      editLog.open();
+      editLog.startLogSegment(0xDEADBEEF);
 
     // create streams pointing to the journal spool files
     // subsequent journal records will go directly to the spool
-    editLog.divertFileStreams(STORAGE_JSPOOL_DIR + "/" + STORAGE_JSPOOL_FILE);
-    setCheckpointState(CheckpointStates.ROLLED_EDITS);
+// TODO    editLog.divertFileStreams(STORAGE_JSPOOL_DIR + "/" + STORAGE_JSPOOL_FILE);
 
     // set up spooling
     if(backupInputStream == null)
@@ -377,10 +376,10 @@ public class BackupImage extends FSImage {
 
     // rename spool edits.new to edits making it in sync with the active node
     // subsequent journal records will go directly to edits
-    editLog.revertFileStreams(STORAGE_JSPOOL_DIR + "/" + STORAGE_JSPOOL_FILE);
+    // TODO editLog.revertFileStreams(STORAGE_JSPOOL_DIR + "/" + STORAGE_JSPOOL_FILE);
 
     // write version file
-    resetVersion(storage.getImageDigest());
+    // TODO resetVersion(storage.getImageDigest());
 
     // wake up journal writer
     synchronized(this) {
