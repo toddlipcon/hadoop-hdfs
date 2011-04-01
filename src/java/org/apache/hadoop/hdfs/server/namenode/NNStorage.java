@@ -82,9 +82,10 @@ public class NNStorage extends Storage implements Closeable {
 
     private String fileName = null;
     private NameNodeFile(String name) { this.fileName = name; }
+
     String getName() { return fileName; }
   }
-
+  
   /**
    * Implementation of StorageDirType specific to namenode storage
    * A Storage directory could be of type IMAGE which stores only fsimage,
@@ -130,13 +131,6 @@ public class NNStorage extends Storage implements Closeable {
      * @throws IOException
      */
     void formatOccurred(StorageDirectory sd) throws IOException;
-
-    /**
-     * A storage directory is now available use.
-     * @param sd The storage directory which has become available.
-     * @throws IOException
-     */
-    void directoryAvailable(StorageDirectory sd) throws IOException;
   }
 
   final private List<NNStorageListener> listeners;
@@ -252,13 +246,10 @@ public class NNStorage extends Storage implements Closeable {
           if(root.exists() && root.canWrite()) {
             // when we try to restore we just need to remove all the data
             // without saving current in-memory state (which could've changed).
+            // TODO does this still make sense with 1073?
             sd.clearDirectory();
             
             LOG.info("restoring dir " + sd.getRoot().getAbsolutePath());
-            for (NNStorageListener listener : listeners) {
-              listener.directoryAvailable(sd);
-            }
-            
             this.addStorageDir(sd); // restore
             this.removedStorageDirs.remove(sd);
           }
@@ -408,6 +399,7 @@ public class NNStorage extends Storage implements Closeable {
   
   /**
    * Determine the checkpoint time of the specified StorageDirectory
+   * TODO update me
    *
    * @param sd StorageDirectory to check
    * @return If file exists and can be read, last recorded txid. If not, 0L.
@@ -495,11 +487,11 @@ public class NNStorage extends Storage implements Closeable {
    *
    * @return List of filenames to save checkpoints to.
    */
-  public File[] getFsImageNameCheckpoint() {
+  public File[] getFsImageNameCheckpoint(long txid) {
     ArrayList<File> list = new ArrayList<File>();
     for (Iterator<StorageDirectory> it =
                  dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
-      list.add(getStorageFile(it.next(), NameNodeFile.IMAGE_NEW));
+      list.add(getStorageFile(it.next(), NameNodeFile.IMAGE_NEW, txid));
     }
     return list.toArray(new File[list.size()]);
   }
@@ -508,41 +500,16 @@ public class NNStorage extends Storage implements Closeable {
    * Return the name of the image file.
    * @return The name of the first image file.
    */
-  public File getFsImageName() {
+  public File getFsImageName(long txid) {
     StorageDirectory sd = null;
     for (Iterator<StorageDirectory> it =
       dirIterator(NameNodeDirType.IMAGE); it.hasNext();) {
       sd = it.next();
-      File fsImage = getStorageFile(sd, NameNodeFile.IMAGE);
+      File fsImage = getStorageFile(sd, NameNodeFile.IMAGE, txid);
       if(sd.getRoot().canRead() && fsImage.exists())
         return fsImage;
     }
     return null;
-  }
-
-  /**
-   * @return The name of the first editlog file.
-   */
-  public File getFsEditName() throws IOException {
-    for (Iterator<StorageDirectory> it
-           = dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      if(sd.getRoot().canRead())
-        return getEditFile(sd);
-    }
-    return null;
-  }
-
-  /**
-   * @return The name of the first time file.
-   */
-  public File getFsTimeName() {
-    StorageDirectory sd = null;
-    // NameNodeFile.TIME shoul be same on all directories
-    for (Iterator<StorageDirectory> it =
-             dirIterator(); it.hasNext();)
-      sd = it.next();
-    return getStorageFile(sd, NameNodeFile.TIME);
   }
 
   /** Create new dfs name directory.  Caution: this destroys all files
@@ -694,37 +661,88 @@ public class NNStorage extends Storage implements Closeable {
 
     props.setProperty(CHECKPOINT_TXID_PROPERTY, String.valueOf(checkpointTxId));
   }
-
+  
+  static File getStorageFile(StorageDirectory sd, NameNodeFile type, long imageTxId) {
+    return new File(sd.getCurrentDir(),
+        type.getName() + "_" + imageTxId);
+  }
+  
   /**
-   * @return A File of 'type' in storage directory 'sd'.
+   * Get a storage file for one of the files that doesn't need a txid associated
+   * (e.g version, seen_txid)
    */
   static File getStorageFile(StorageDirectory sd, NameNodeFile type) {
     return new File(sd.getCurrentDir(), type.getName());
   }
 
-  /**
-   * @return A editlog File in storage directory 'sd'.
-   */
-  static File getEditFile(StorageDirectory sd) {
-    return getStorageFile(sd, NameNodeFile.EDITS);
+  static String getCheckpointImageFileName(long txid) {
+    return NameNodeFile.IMAGE_NEW.getName() + "_" + txid;
+  }
+
+  static String getImageFileName(long txid) {
+    return NameNodeFile.IMAGE.getName() + "_" + txid;
+  }
+  
+  static String getInProgressEditsFileName(long startTxId) {
+    return NameNodeFile.EDITS_INPROGRESS.getName() + "_" + startTxId;
+  }
+  
+  static File getInProgressEditsFile(StorageDirectory sd, long startTxId) {
+    return new File(sd.getCurrentDir(), getInProgressEditsFileName(startTxId));
+  }
+  
+  static File getFinalizedEditsFile(StorageDirectory sd,
+      long startTxId, long endTxId) {
+    return new File(sd.getCurrentDir(),
+        getFinalizedEditsFileName(startTxId, endTxId));
+  }
+  
+  static String getFinalizedEditsFileName(long startTxId, long endTxId) {
+    return NameNodeFile.EDITS.getName() + "_" + startTxId + "-" + endTxId;
+  }
+  
+  File getExistingFinalizedEditsFile(long startTxId, long endTxId)
+  throws IOException {
+    File ret = findFile(NameNodeDirType.EDITS,
+        getFinalizedEditsFileName(startTxId, endTxId));
+    if (ret == null) {
+      throw new IOException(
+          "No edits file for txid " + startTxId + "-" + endTxId + " exists!");
+    }
+    return ret;
+  }
+    
+
+  File getExistingImageFile(long txid) throws IOException {
+    File ret = findFile(NameNodeDirType.IMAGE,
+        getImageFileName(txid));
+    if (ret == null) {
+      throw new IOException("No image file for txid " + txid + " exists!");
+    }
+    return ret;
+  }
+    
+  private File findFile(NameNodeDirType dirType, String name) {
+    for (StorageDirectory sd : dirIterable(dirType)) {
+      File candidate = new File(sd.getCurrentDir(), name);
+      if (sd.getCurrentDir().canRead() &&
+          candidate.exists()) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   /**
-   * @return A temporary editlog File in storage directory 'sd'.
+   * @return A list of the given File in every available storage directory,
+   * regardless of whether it might exist.
    */
-  static File getEditNewFile(StorageDirectory sd) {
-    return getStorageFile(sd, NameNodeFile.EDITS_NEW);
-  }
-
-  /**
-   * @return A list of all Files of 'type' in available storage directories.
-   */
-  Collection<File> getFiles(NameNodeFile type, NameNodeDirType dirType) {
+  Collection<File> getFiles(NameNodeDirType dirType, String fileName) {
     ArrayList<File> list = new ArrayList<File>();
     Iterator<StorageDirectory> it =
       (dirType == null) ? dirIterator() : dirIterator(dirType);
     for ( ;it.hasNext(); ) {
-      list.add(getStorageFile(it.next(), type));
+      list.add(new File(it.next().getCurrentDir(), fileName));
     }
     return list;
   }

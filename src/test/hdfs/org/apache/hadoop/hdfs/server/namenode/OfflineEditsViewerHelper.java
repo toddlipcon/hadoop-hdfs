@@ -73,7 +73,7 @@ public class OfflineEditsViewerHelper {
    */
   public String generateEdits() throws IOException {
     runOperations();
-    return getEditsFilename();
+    return getEditsFilename(1);
   }
 
   /**
@@ -81,13 +81,13 @@ public class OfflineEditsViewerHelper {
    *
    * @return edits file name for cluster
    */
-  private String getEditsFilename() throws IOException {
+  private String getEditsFilename(long txId) throws IOException {
     FSImage image = cluster.getNameNode().getFSImage();
     // it was set up to only have ONE StorageDirectory
     Iterator<StorageDirectory> it
       = image.getStorage().dirIterator(NameNodeDirType.EDITS);
     StorageDirectory sd = it.next();
-    return image.getStorage().getEditFile(sd).getAbsolutePath();
+    return image.getStorage().getInProgressEditsFile(sd, txId).getAbsolutePath();
   }
 
   /**

@@ -42,40 +42,20 @@ public interface JournalManager {
   EditLogOutputStream getCurrentStream();
 
   /**
-   * Prepare the stream to write edits
+   * TODO
    */
-  void open() throws IOException;
-  
-  /**
-   * Close the currently open stream cleanly
-   */
-  void close() throws IOException;
-  
-  /**
-   * Abort the currently open stream in the case that the storage has
-   * noticed that the directory is no longer valid.
-   */
-  void abort() throws IOException;
-  
-  /**
-   * Re-open the stream when the underlying storage directory has been
-   * deemed recovered.
-   */
-  void restore() throws IOException;  
-
-  /**
-   * Divert streams, eg to "edits.new". This will go away with 1073 TODO
-   */
-  void divertFileStreams(String dest) throws IOException;
-
-  /**
-   * Revert streams, eg by renaming edits.new back to "edits". This will go
-   * away with HDFS-1073
-   */
-  void revertFileStreams(String source) throws IOException;
+  void startLogSegment(long txId) throws IOException;
+  void endLogSegment(long firstTxid, long lastTxid) throws IOException;
+  void abortCurrentSegment() throws IOException;
 
   /**
    * Set the amount of memory that this stream should use to buffer edits
    */
   void setBufferCapacity(int size);
+
+  boolean canRestore();
+
+  void close();
+
+
 }

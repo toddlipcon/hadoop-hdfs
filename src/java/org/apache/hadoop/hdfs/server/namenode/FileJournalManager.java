@@ -17,16 +17,25 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 import java.io.File;
 import java.io.IOException;
 
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 
+import com.google.common.base.Preconditions;
+
 /**
  * Journal manager for the common case of edits files being written
  * to a storage directory.
+ * 
+ * Note: this class is not thread-safe and should be externally
+ * synchronized.
  */
 public class FileJournalManager implements JournalManager {
+  private static final Log LOG = LogFactory.getLog(FileJournalManager.class);
 
   private final StorageDirectory sd;
   private EditLogFileOutputStream currentStream;
@@ -37,79 +46,91 @@ public class FileJournalManager implements JournalManager {
   }
   
   @Override
-  public void open() throws IOException {
-    assert currentStream == null;
-    File eFile = NNStorage.getEditFile(sd);
+  public void startLogSegment(long txid) throws IOException {
+    Preconditions.checkState(currentStream == null,
+        "Trying to begin log segment for txid " + txid +
+        " when current stream is " + currentStream);
     
-    currentStream = new EditLogFileOutputStream(
-        eFile, sizeOutputFlushBuffer);    
+    File newInProgress = NNStorage.getInProgressEditsFile(sd, txid);
+    currentStream = new EditLogFileOutputStream(newInProgress,
+                                                sizeOutputFlushBuffer );
+    currentStream.create();
   }
 
+  /**
+   * TODO
+   */  
   @Override
-  public void abort() throws IOException {
+  public void endLogSegment(long firstTxid,
+      long lastTxid) throws IOException {
+    closeCurrentStream();
+    finalizeEditsFile(firstTxid, lastTxid);
+  }
+  
+  @Override
+  public void abortCurrentSegment() throws IOException {
     if (currentStream != null) {
-      currentStream.close();
-      currentStream = null;
+      closeCurrentStream();
     }
   }
-
+  
   @Override
-  public void close() throws IOException {
+  public void close() {
+    assert currentStream == null :
+      "Closing journal manager when in the middle of segment: " + currentStream;
+  }
+
+  /**
+   * Close the current log segment without finalizing the filename
+   */
+  private void closeCurrentStream() throws IOException {
+    Preconditions.checkNotNull(currentStream,
+        "No stream for %s", this);
+    
     currentStream.setReadyToFlush();
     currentStream.flush();
     currentStream.close();
     currentStream = null;
   }
   
-  @Override
-  public void restore() throws IOException {
-    assert currentStream == null :
-      "Should have been aborted before restoring!" +
-      "Current stream: " + currentStream;
-    open();
-  }
-  
-
-  @Override
-  public void divertFileStreams(String dest) throws IOException {
-    // close old stream
-    close();
-    // create new stream
-    currentStream = new EditLogFileOutputStream(new File(sd.getRoot(), dest),
-        sizeOutputFlushBuffer);
-    currentStream.create();    
-  }
-
-  @Override
-  public void revertFileStreams(String source) throws IOException {
-    // close old stream
-    close();
+  private void finalizeEditsFile(long firstTxId, long lastTxId)
+      throws IOException {
+    File inprogressFile = NNStorage.getInProgressEditsFile(
+        sd, firstTxId);
+    File dstFile = NNStorage.getFinalizedEditsFile(
+        sd, firstTxId, lastTxId);
+    LOG.debug("Finalizing edits file " + inprogressFile + " -> " + dstFile);
     
-    // rename edits.new to edits
-    File editFile = NNStorage.getEditFile(sd);
-    File prevEditFile = new File(sd.getRoot(), source);
-    if(prevEditFile.exists()) {
-      if(!prevEditFile.renameTo(editFile)) {
-        //
-        // renameTo() fails on Windows if the destination
-        // file exists.
-        //
-        if(!editFile.delete() || !prevEditFile.renameTo(editFile)) {
-          throw new IOException("Rename failed for " + sd.getRoot());
-        }
-      }
+    Preconditions.checkState(!dstFile.exists(),
+        "Can't finalize edits file " + inprogressFile + " since finalized file " +
+        "already exists");
+    if (!inprogressFile.renameTo(dstFile)) {
+      throw new IOException("Unable to finalize edits file " + inprogressFile);
     }
-    // open new stream
-    currentStream = new EditLogFileOutputStream(editFile, sizeOutputFlushBuffer);
   }
-
+ 
   @Override
   public StorageDirectory getStorageDirectory() {
     return sd;
   }
+  
+  
+  @Override // TODO do we need this?
+  public boolean canRestore() {
+    return sd.getCurrentDir().canWrite();
+  }
+
+  @Override
+  public String toString() {
+    return "FileJournalManager for " +
+      sd + " (currentStream=" + currentStream + ")"; 
+  }
 
   @Override
   public EditLogOutputStream getCurrentStream() {
+    Preconditions.checkNotNull(currentStream,
+        "FileJournalManager %s is currently in between rolls",
+        this);
     return currentStream;
   }
 

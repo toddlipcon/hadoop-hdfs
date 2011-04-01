@@ -177,9 +177,11 @@ class Checkpointer extends Daemon {
    */
   private void downloadCheckpoint(CheckpointSignature sig) throws IOException {
     // Retrieve image file
-    String fileid = "getimage=1";
+    String fileid =
+      GetImageServlet.getParamStringForImage(sig.lastCheckpointTxId);
+    
     Collection<File> list = getFSImage()
-      .getStorage().getFiles(NameNodeFile.IMAGE, NameNodeDirType.IMAGE);
+      .getStorage().getFiles(NameNodeDirType.IMAGE, "TODO");
     File[] files = list.toArray(new File[list.size()]);
     assert files.length > 0 : "No checkpoint targets.";
     String nnHttpAddr = backupNode.nnHttpAddress;
@@ -190,7 +192,7 @@ class Checkpointer extends Daemon {
     // Retrieve edits file
     fileid = "getedit=1";
     list = getFSImage()
-      .getStorage().getFiles(NameNodeFile.EDITS, NameNodeDirType.EDITS);
+      .getStorage().getFiles(NameNodeDirType.EDITS, "TODO");
     files = list.toArray(new File[list.size()]);
     assert files.length > 0 : "No checkpoint targets.";
     TransferFsImage.getFileClient(nnHttpAddr, fileid, files, false);
@@ -240,7 +242,6 @@ class Checkpointer extends Daemon {
       + FSConstants.LAYOUT_VERSION + " actual "+ sig.getLayoutVersion();
     assert !backupNode.isRole(NamenodeRole.CHECKPOINT) ||
       cpCmd.isImageObsolete() : "checkpoint node should always download image.";
-    backupNode.setCheckpointState(CheckpointStates.UPLOAD_START);
     if(cpCmd.isImageObsolete()) {
       // First reset storage on disk and memory state
       backupNode.resetNamespace();
@@ -263,6 +264,6 @@ class Checkpointer extends Daemon {
         getFSImage().getEditLog().close();
     LOG.info("Checkpoint completed in "
         + (now() - startTime)/1000 + " seconds."
-        + " New Image Size: " + bnImage.getStorage().getFsImageName().length());
+        + " New Image Size: " + bnImage.getStorage().getFsImageName(0 /* TODO */).length());
   }
 }
