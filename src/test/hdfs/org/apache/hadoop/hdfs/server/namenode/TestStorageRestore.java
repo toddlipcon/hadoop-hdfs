@@ -185,26 +185,6 @@ public class TestStorageRestore extends TestCase {
 
   
   /**
-   * read currentCheckpointTime directly from the file
-   * @param currDir
-   * @return the checkpoint time
-   * @throws IOException
-   */
-  long readCheckpointTime(File currDir) throws IOException {
-    File timeFile = new File(currDir, NameNodeFile.TIME.getName()); 
-    long timeStamp = 0L;
-    if (timeFile.exists() && timeFile.canRead()) {
-      DataInputStream in = new DataInputStream(new FileInputStream(timeFile));
-      try {
-        timeStamp = in.readLong();
-      } finally {
-        in.close();
-      }
-    }
-    return timeStamp;
-  }
-  
-  /**
    *  check if files exist/not exist
    * @throws IOException 
    */
@@ -217,11 +197,7 @@ public class TestStorageRestore extends TestCase {
     File fsEdits1 = new File(path1, Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS.getName());
     File fsEdits2 = new File(path2, Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS.getName());
     File fsEdits3 = new File(path3, Storage.STORAGE_DIR_CURRENT + "/" + NameNodeFile.EDITS.getName());
-    
-    long chkPt1 = readCheckpointTime(new File(path1, Storage.STORAGE_DIR_CURRENT));
-    long chkPt2 = readCheckpointTime(new File(path2, Storage.STORAGE_DIR_CURRENT));
-    long chkPt3 = readCheckpointTime(new File(path3, Storage.STORAGE_DIR_CURRENT));
-    
+        
     String md5_1 = null,md5_2 = null,md5_3 = null;
     try {
       md5_1 = getFileMD5(fsEdits1);
@@ -236,7 +212,6 @@ public class TestStorageRestore extends TestCase {
     LOG.info("++++ edits files = "+fsEdits1.getAbsolutePath() + "," + fsEdits2.getAbsolutePath() + ","+ fsEdits3.getAbsolutePath());
     LOG.info("checkFiles compares lengths: img1=" + fsImg1.length()  + ",img2=" + fsImg2.length()  + ",img3=" + fsImg3.length());
     LOG.info("checkFiles compares lengths: edits1=" + fsEdits1.length()  + ",edits2=" + fsEdits2.length()  + ",edits3=" + fsEdits3.length());
-    LOG.info("checkFiles compares chkPts: name1=" + chkPt1  + ",name2=" + chkPt2  + ",name3=" + chkPt3);
     LOG.info("checkFiles compares md5s: " + fsEdits1.getAbsolutePath() + 
         "="+ md5_1  + "," + fsEdits2.getAbsolutePath() + "=" + md5_2  + "," +
         fsEdits3.getAbsolutePath() + "=" + md5_3);  
@@ -249,10 +224,6 @@ public class TestStorageRestore extends TestCase {
       assertTrue(fsEdits1.length() == fsEdits3.length());
       assertTrue(md5_1.equals(md5_2));
       assertTrue(md5_1.equals(md5_3));
-      
-      // checkpoint times
-      assertTrue(chkPt1 == chkPt2);
-      assertTrue(chkPt1 == chkPt3);
     } else {
       // should be different
       //assertTrue(fsImg1.length() != fsImg2.length());
@@ -262,11 +233,6 @@ public class TestStorageRestore extends TestCase {
       
       assertTrue(!md5_1.equals(md5_2));
       assertTrue(!md5_1.equals(md5_3));
-      
-      
-   // checkpoint times
-      assertTrue(chkPt1 > chkPt2);
-      assertTrue(chkPt1 > chkPt3);
     }
   }
   

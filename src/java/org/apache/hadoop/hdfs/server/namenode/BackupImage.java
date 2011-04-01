@@ -85,7 +85,6 @@ public class BackupImage extends FSImage {
   void recoverCreateRead(Collection<URI> imageDirs,
                          Collection<URI> editsDirs) throws IOException {
     storage.setStorageDirectories(imageDirs, editsDirs);
-    storage.setCheckpointTime(0L);
     for (Iterator<StorageDirectory> it = storage.dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
       StorageState curState;
@@ -158,7 +157,8 @@ public class BackupImage extends FSImage {
     // set storage fields
     storage.setStorageInfo(sig);
     storage.setImageDigest(sig.getImageDigest());
-    storage.setCheckpointTime(sig.checkpointTime);
+    // storage.setCheckpointTime(sig.checkpointTime);
+    // TODO do something with checkpoint txid?
 
     FSDirectory fsDir = getFSNamesystem().dir;
     if(fsDir.isEmpty()) {
@@ -307,23 +307,6 @@ public class BackupImage extends FSImage {
     if(backupInputStream == null)
       backupInputStream = new EditLogBackupInputStream(nnReg.getAddress());
     jsState = JSpoolState.INPROGRESS;
-  }
-
-  synchronized void setCheckpointTime(int length, byte[] data)
-  throws IOException {
-    assert backupInputStream.length() == 0 : "backup input stream is not empty";
-    try {
-      // unpack new checkpoint time
-      backupInputStream.setBytes(data);
-      DataInputStream in = backupInputStream.getDataInputStream();
-      byte op = in.readByte();
-      assert op == NamenodeProtocol.JA_CHECKPOINT_TIME;
-      LongWritable lw = new LongWritable();
-      lw.readFields(in);
-      storage.setCheckpointTimeInStorage(lw.get());
-    } finally {
-      backupInputStream.clear();
-    }
   }
 
   /**

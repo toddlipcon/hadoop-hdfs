@@ -144,14 +144,13 @@ public class NNStorage extends Storage implements Closeable {
   private Object restorationLock = new Object();
   private boolean disablePreUpgradableLayoutCheck = false;
 
-  private long checkpointTime = -1L;  // The age of the image
 
   /**
    * TxId of the last transaction that was included in the most
    * recent fsimage file. This does not include any transactions
    * that have since been written to the edit log.
    */
-  protected long checkpointTxId;
+  protected long checkpointTxId = -1;
 
   /**
    * list of failed (and thus removed) storages
@@ -423,68 +422,13 @@ public class NNStorage extends Storage implements Closeable {
   }
 
   /**
-   * Write last checkpoint time into a separate file.
-   *
-   * @param sd
-   * @throws IOException
-   */
-  public void writeCheckpointTime(StorageDirectory sd) throws IOException {
-    if (checkpointTime < 0L)
-      return; // do not write negative time
-    File timeFile = getStorageFile(sd, NameNodeFile.TIME);
-    if (timeFile.exists() && ! timeFile.delete()) {
-        LOG.error("Cannot delete chekpoint time file: "
-                  + timeFile.getCanonicalPath());
-    }
-    FileOutputStream fos = new FileOutputStream(timeFile);
-    DataOutputStream out = new DataOutputStream(fos);
-    try {
-      out.writeLong(checkpointTime);
-      out.flush();
-      fos.getChannel().force(true);
-    } finally {
-      out.close();
-    }
-  }
-
-  /**
-   * Record new checkpoint time in order to
-   * distinguish healthy directories from the removed ones.
-   * If there is an error writing new checkpoint time, the corresponding
-   * storage directory is removed from the list.
-   */
-  public void incrementCheckpointTime() {
-    setCheckpointTimeInStorage(checkpointTime + 1);
-  }
-
-  /**
-   * The age of the namespace state.<p>
-   * Reflects the latest time the image was saved.
-   * Modified with every save or a checkpoint.
-   * Persisted in VERSION file.
-   *
-   * @return the current checkpoint time.
-   */
-  public long getCheckpointTime() {
-    return checkpointTime;
-  }
-
-  /**
-   * Set the checkpoint time.
-   *
-   * This method does not persist the checkpoint time to storage immediately.
-   * 
-   * @see #setCheckpointTimeInStorage
-   * @param newCpT the new checkpoint time.
-   */
-  public void setCheckpointTime(long newCpT) {
-    checkpointTime = newCpT;
-  }
-
-  /**
    * Set the transaction ID of the last checkpoint
    */
   void setCheckpointTxId(long checkpointTxId) {
+    assert checkpointTxId >= this.checkpointTxId :
+      "Trying to decrease checkpointTxId from " + this.checkpointTxId +
+      " to " + checkpointTxId;
+    
     this.checkpointTxId = checkpointTxId;
   }
 
@@ -493,27 +437,6 @@ public class NNStorage extends Storage implements Closeable {
    */
   long getCheckpointTxId() {
     return checkpointTxId;
-  }
-
-  /**
-   * Set the current checkpoint time. Writes the new checkpoint
-   * time to all available storage directories.
-   * @param newCpT The new checkpoint time.
-   */
-  public void setCheckpointTimeInStorage(long newCpT) {
-    checkpointTime = newCpT;
-    // Write new checkpoint time in all storage directories
-    for(Iterator<StorageDirectory> it =
-                          dirIterator(); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      try {
-        writeCheckpointTime(sd);
-      } catch(IOException e) {
-        // Close any edits stream associated with this dir and remove directory
-        LOG.warn("incrementCheckpointTime failed on "
-                 + sd.getRoot().getPath() + ";type="+sd.getStorageDirType());
-      }
-    }
   }
 
   /**
@@ -560,18 +483,6 @@ public class NNStorage extends Storage implements Closeable {
     return null;
   }
 
-  /**
-   * @return The name of the first time file.
-   */
-  public File getFsTimeName() {
-    StorageDirectory sd = null;
-    // NameNodeFile.TIME shoul be same on all directories
-    for (Iterator<StorageDirectory> it =
-             dirIterator(); it.hasNext();)
-      sd = it.next();
-    return getStorageFile(sd, NameNodeFile.TIME);
-  }
-
   /** Create new dfs name directory.  Caution: this destroys all files
    * in this filesystem. */
   private void format(StorageDirectory sd) throws IOException {
@@ -593,7 +504,6 @@ public class NNStorage extends Storage implements Closeable {
     this.layoutVersion = FSConstants.LAYOUT_VERSION;
     this.namespaceID = newNamespaceID();
     this.cTime = 0L;
-    this.setCheckpointTime(now());
     for (Iterator<StorageDirectory> it =
                            dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
@@ -708,8 +618,6 @@ public class NNStorage extends Storage implements Closeable {
           " has checkpoint transaction id when version is " 
           + layoutVersion);
     }
-
-    this.setCheckpointTime(readCheckpointTime(sd));
   }
 
   /**
@@ -741,7 +649,6 @@ public class NNStorage extends Storage implements Closeable {
 
     props.setProperty(MESSAGE_DIGEST_PROPERTY, imageDigest.toString());
     props.setProperty(CHECKPOINT_TXID_PROPERTY, String.valueOf(checkpointTxId));
-    writeCheckpointTime(sd);
   }
 
   /**
@@ -924,7 +831,6 @@ public class NNStorage extends Storage implements Closeable {
     if (this.storageDirs.remove(sd)) {
       this.removedStorageDirs.add(sd);
     }
-    incrementCheckpointTime();
 
     lsd = listStorageDirectories();
     LOG.debug("at the end current list of storage dirs:" + lsd);
