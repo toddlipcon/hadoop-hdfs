@@ -386,7 +386,8 @@ public class TestEditLog extends TestCase {
     FSImage fsimage = namesystem.getFSImage();
     final FSEditLog editLog = fsimage.getEditLog();
     fileSys.mkdirs(new Path("/tmp"));
-    File editFile = editLog.getFsEditName();
+    StorageDirectory sd = fsimage.getStorage().dirIterator(NameNodeDirType.EDITS).next();
+    File editFile = NNStorage.getStorageFile(sd, NameNodeFile.EDITS);
     editLog.close();
     cluster.shutdown();
       long fileLen = editFile.length();

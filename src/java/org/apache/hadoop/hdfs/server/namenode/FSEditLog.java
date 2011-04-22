@@ -52,6 +52,7 @@ import org.apache.hadoop.security.token.delegation.DelegationKey;
 import org.apache.hadoop.util.PureJavaCrc32;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 
 import static org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes.*;
 
@@ -68,8 +69,6 @@ public class FSEditLog implements NNStorageListener {
 
   private static final Log LOG = LogFactory.getLog(FSEditLog.class);
 
-  private volatile int sizeOutputFlushBuffer = 512*1024;
-
   private enum State {
     UNINITIALIZED,
     WRITING_EDITS,
@@ -78,7 +77,9 @@ public class FSEditLog implements NNStorageListener {
   }  
   private State state = State.UNINITIALIZED;
 
-  private ArrayList<EditLogOutputStream> editStreams = new ArrayList<EditLogOutputStream>();
+
+  private List<JournalManager> journals = Lists.newArrayList();
+  private List<JournalManager> faultyJournals = Lists.newArrayList();;
 
   // a monotonically increasing counter that represents transactionIds.
   private long txid = 0;
@@ -137,67 +138,34 @@ public class FSEditLog implements NNStorageListener {
     metrics = NameNode.getNameNodeMetrics();
     lastPrintTime = now();
   }
-
+  
   /**
    * Initialize the list of edit journals
    */
-  private void initJournals() throws IOException {
-    assert editStreams.isEmpty();
-
-    Preconditions.checkState(state == State.UNINITIALIZED || state == State.CLOSED,
+  private void initJournals() {
+    assert journals.isEmpty();
+    assert faultyJournals.isEmpty();
+    Preconditions.checkState(state == State.UNINITIALIZED,
         "Bad state: %s", state);
-
-    ArrayList<StorageDirectory> al = null;
-    for (Iterator<StorageDirectory> it 
-         = storage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      File eFile = getEditFile(sd);
-      try {
-        addNewEditLogStream(eFile);
-      } catch (IOException e) {
-        LOG.warn("Unable to open edit log file " + eFile);
-        // Remove the directory from list of storage directories
-        if(al == null) al = new ArrayList<StorageDirectory>(1);
-        al.add(sd);
-        
-      }
-    }    
-    if(al != null) storage.reportErrorsOnDirectories(al);
     
-    if (editStreams.isEmpty()) {
+    for (StorageDirectory sd : storage.dirIterable(NameNodeDirType.EDITS)) {
+      journals.add(new FileJournalManager(sd));
+    }
+    
+    if (journals.isEmpty()) {
       LOG.error("No edits directories configured!");
     }
     
     state = State.CLOSED;
-  }
- 
-  private File getEditFile(StorageDirectory sd) {
-    return storage.getEditFile(sd);
-  }
-  
-  private File getEditNewFile(StorageDirectory sd) {
-    return storage.getEditNewFile(sd);
   }
   
   private int getNumEditsDirs() {
    return storage.getNumStorageDirs(NameNodeDirType.EDITS);
   }
 
-  synchronized int getNumEditStreams() {
-    return editStreams == null ? 0 : editStreams.size();
-  }
-
-  /**
-   * Return the currently active edit streams.
-   * This should be used only by unit tests.
-   */
-  ArrayList<EditLogOutputStream> getEditStreams() {
-    return editStreams;
-  }
-
-  boolean isOpen() {
+  synchronized boolean isOpen() {
     return state == State.WRITING_EDITS ||
-      state == State.WRITING_EDITS_NEW;
+           state == State.WRITING_EDITS_NEW;
   }
 
   /**
@@ -207,8 +175,7 @@ public class FSEditLog implements NNStorageListener {
    * @throws IOException
    */
   synchronized void open() throws IOException {
-    if (state == State.UNINITIALIZED
-	|| state == State.CLOSED) {
+    if (state == State.UNINITIALIZED) {
       initJournals();
     }
     
@@ -217,20 +184,24 @@ public class FSEditLog implements NNStorageListener {
 
     numTransactions = totalTimeTransactions = numTransactionsBatchedInSync = 0;
     
+    mapJournalsAndReportErrors(new JournalManagerClosure() {
+      @Override
+      public void apply(JournalManager jm) throws IOException {
+        jm.open();
+      }
+    
+    }, "Opening logs");
+    
     state = State.WRITING_EDITS;
   }
   
-  synchronized void addNewEditLogStream(File eFile) throws IOException {
-    EditLogOutputStream eStream = new EditLogFileOutputStream(eFile,
-        sizeOutputFlushBuffer);
-    editStreams.add(eStream);
-  }
-
+  // TODO remove me!
+  @Deprecated
   synchronized void createEditLogFile(File name) throws IOException {
     waitForSyncToFinish();
 
     EditLogOutputStream eStream = new EditLogFileOutputStream(name,
-        sizeOutputFlushBuffer);
+        1024);
     eStream.create();
     eStream.close();
   }
@@ -243,120 +214,40 @@ public class FSEditLog implements NNStorageListener {
       LOG.warn("Closing log when already closed", new Exception());
       return;
     }
-
+    
     waitForSyncToFinish();
-    if (editStreams.isEmpty()) {
+    if (journals.isEmpty()) {
       return;
     }
 
     printStatistics(true);
     numTransactions = totalTimeTransactions = numTransactionsBatchedInSync = 0;
 
-    mapStreamsAndReportErrors(new StreamClosure() {
-        @Override
-        public void apply(EditLogOutputStream stream) throws IOException {
-          closeStream(stream);
-        }      
-      }, "Closing stream");
-   
-    editStreams.clear();
+    mapJournalsAndReportErrors(new JournalManagerClosure() {
+      @Override
+      public void apply(JournalManager jm) throws IOException {
+        jm.close();
+      }
+    }, "closing journal");
 
     state = State.CLOSED;
-  }
-
-  /**
-   * Close and remove edit log stream.
-   * @param index of the stream
-   */
-  synchronized private void removeStream(int index) {
-    EditLogOutputStream eStream = editStreams.get(index);
-    try {
-      eStream.close();
-    } catch (Exception e) {}
-    editStreams.remove(index);
-  }
-
-  /**
-   * The specified streams have IO errors. Close and remove them.
-   */
-  synchronized
-  void disableAndReportErrorOnStreams(List<EditLogOutputStream> errorStreams) {
-    if (errorStreams == null || errorStreams.size() == 0) {
-      return;                       // nothing to do
-    }
-    ArrayList<StorageDirectory> errorDirs = new ArrayList<StorageDirectory>();
-    for (EditLogOutputStream e : errorStreams) {
-      if (e.getType() == JournalType.FILE) {
-        errorDirs.add(getStorageDirectoryForStream(e));
-      } else {
-        disableStream(e);
-      }
-    }
-
-    try {
-      storage.reportErrorsOnDirectories(errorDirs);
-    } catch (IOException ioe) {
-      LOG.error("Problem erroring streams " + ioe);
-    }
-  }
-
-
-  /**
-   * get an editStream corresponding to a sd
-   * @param es - stream to remove
-   * @return the matching stream
-   */
-  StorageDirectory getStorage(EditLogOutputStream es) {
-    String parentStorageDir = ((EditLogFileOutputStream)es).getFile()
-    .getParentFile().getParentFile().getAbsolutePath();
-
-    Iterator<StorageDirectory> it = storage.dirIterator(); 
-    while (it.hasNext()) {
-      StorageDirectory sd = it.next();
-      LOG.info("comparing: " + parentStorageDir + " and " + sd.getRoot().getAbsolutePath()); 
-      if (parentStorageDir.equals(sd.getRoot().getAbsolutePath()))
-        return sd;
-    }
-    return null;
-  }
-  
-  /**
-   * get an editStream corresponding to a sd
-   * @param sd
-   * @return the matching stream
-   */
-  synchronized EditLogOutputStream getEditsStream(StorageDirectory sd) {
-    for (EditLogOutputStream es : editStreams) {
-      File parentStorageDir = ((EditLogFileOutputStream)es).getFile()
-        .getParentFile().getParentFile();
-      if (parentStorageDir.getName().equals(sd.getRoot().getName()))
-        return es;
-    }
-    return null;
-  }
-
-  /**
-   * check if edits.new log exists in the specified stoorage directory
-   */
-  boolean existsNew(StorageDirectory sd) {
-    return getEditNewFile(sd).exists(); 
   }
 
   /**
    * Write an operation to the edit log. Do not sync to persistent
    * store yet.
    */
-
   void logEdit(final FSEditLogOpCodes opCode, final Writable ... writables) {
-    assert state != State.UNINITIALIZED && state != State.CLOSED;
-
+    assert state != State.CLOSED;
+    
     synchronized (this) {
       // wait if an automatic sync is scheduled
       waitIfAutoSyncScheduled();
       
-      if(getNumEditStreams() == 0)
+      if (journals.isEmpty()) {
         throw new java.lang.IllegalStateException(NO_JOURNAL_STREAMS_WARNING);
-
+      }
+      
       // Only start a new transaction for OPs which will be persisted to disk.
       // Obviously this excludes control op codes.
       long start = now();
@@ -364,14 +255,15 @@ public class FSEditLog implements NNStorageListener {
         start = beginTransaction();
       }
 
-      mapStreamsAndReportErrors(new StreamClosure() {
-          @Override
-          public void apply(EditLogOutputStream stream) throws IOException {
-            if(!stream.isOperationSupported(opCode.getOpCode()))
-              return;
-            stream.write(opCode.getOpCode(), txid, writables);
-          }      
-        }, "Writing op to stream");
+      mapJournalsAndReportErrors(new JournalManagerClosure() {
+        @Override 
+        public void apply(JournalManager jm) throws IOException {
+          EditLogOutputStream stream = jm.getCurrentStream();
+          if(!stream.isOperationSupported(opCode.getOpCode()))
+            return;
+          stream.write(opCode.getOpCode(), txid, writables);
+        }
+      }, "logging edit");
 
       endTransaction(start);
       
@@ -416,8 +308,8 @@ public class FSEditLog implements NNStorageListener {
    * @return true if any of the edit stream says that it should sync
    */
   private boolean shouldForceSync() {
-    for (EditLogOutputStream eStream : editStreams) {
-      if (eStream.shouldForceSync()) {
+    for (JournalManager j : journals) {
+      if (j.getCurrentStream().shouldForceSync()) {
         return true;
       }
     }
@@ -510,12 +402,15 @@ public class FSEditLog implements NNStorageListener {
    * waitForSyncToFinish() before assuming they are running alone.
    */
   public void logSync() {
-    ArrayList<EditLogOutputStream> errorStreams = null;
     long syncStart = 0;
 
     // Fetch the transactionId of this thread. 
     long mytxid = myTransactionId.get().txid;
-    ArrayList<EditLogOutputStream> streams = new ArrayList<EditLogOutputStream>();
+    
+    List<JournalManager> stillGoodJournals =
+      Lists.newArrayListWithCapacity(journals.size());
+    List<JournalManager> badJournals = Lists.newArrayList();
+    
     boolean sync = false;
     try {
       synchronized (this) {
@@ -546,20 +441,15 @@ public class FSEditLog implements NNStorageListener {
         sync = true;
   
         // swap buffers
-        assert editStreams.size() > 0 : "no editlog streams";
-        for(EditLogOutputStream eStream : editStreams) {
+        assert !journals.isEmpty() : "no editlog streams";
+        
+        for (JournalManager j : journals) {
           try {
-            eStream.setReadyToFlush();
-            streams.add(eStream);
+            j.getCurrentStream().setReadyToFlush();
+            stillGoodJournals.add(j);
           } catch (IOException ie) {
             LOG.error("Unable to get ready to flush.", ie);
-            //
-            // remember the streams that encountered an error.
-            //
-            if (errorStreams == null) {
-              errorStreams = new ArrayList<EditLogOutputStream>(1);
-            }
-            errorStreams.add(eStream);
+            badJournals.add(j);
           }
         }
         } finally {
@@ -570,22 +460,19 @@ public class FSEditLog implements NNStorageListener {
   
       // do the sync
       long start = now();
-      for (EditLogOutputStream eStream : streams) {
+      for (JournalManager j : stillGoodJournals) {
         try {
-          eStream.flush();
+          j.getCurrentStream().flush();
         } catch (IOException ie) {
           LOG.error("Unable to sync edit log.", ie);
           //
           // remember the streams that encountered an error.
           //
-          if (errorStreams == null) {
-            errorStreams = new ArrayList<EditLogOutputStream>(1);
-          }
-          errorStreams.add(eStream);
+          badJournals.add(j);
         }
       }
       long elapsed = now() - start;
-      disableAndReportErrorOnStreams(errorStreams);
+      disableAndReportErrorOnJournals(badJournals);
   
       if (metrics != null) // Metrics non-null only when used inside name node
         metrics.syncs.inc(elapsed);
@@ -609,7 +496,7 @@ public class FSEditLog implements NNStorageListener {
     if (lastPrintTime + 60000 > now && !force) {
       return;
     }
-    if (editStreams == null || editStreams.size()==0) {
+    if (journals.isEmpty()) {
       return;
     }
     lastPrintTime = now;
@@ -621,12 +508,11 @@ public class FSEditLog implements NNStorageListener {
     buf.append("Number of transactions batched in Syncs: ");
     buf.append(numTransactionsBatchedInSync);
     buf.append(" Number of syncs: ");
-    buf.append(editStreams.get(0).getNumSync());
+    buf.append(journals.get(0).getCurrentStream().getNumSync());
     buf.append(" SyncTimes(ms): ");
 
-    int numEditStreams = editStreams.size();
-    for (int idx = 0; idx < numEditStreams; idx++) {
-      EditLogOutputStream eStream = editStreams.get(idx);
+    for (JournalManager j : journals) {
+      EditLogOutputStream eStream = j.getCurrentStream();
       buf.append(eStream.getTotalSyncTime());
       buf.append(" ");
     }
@@ -834,26 +720,34 @@ public class FSEditLog implements NNStorageListener {
    * Return the size of the current EditLog
    */
   synchronized long getEditLogSize() throws IOException {
-    assert getNumEditsDirs() <= getNumEditStreams() : 
+    assert getNumEditsDirs() <= journals.size() :
         "Number of edits directories should not exceed the number of streams.";
     long size = 0;
-    ArrayList<EditLogOutputStream> al = null;
-    for (int idx = 0; idx < getNumEditStreams(); idx++) {
-      EditLogOutputStream es = editStreams.get(idx);
+        
+    List<JournalManager> badJournals = Lists.newArrayList();
+    
+    for (JournalManager j : journals) {
+      EditLogOutputStream es = j.getCurrentStream();
       try {
         long curSize = es.length();
         assert (size == 0 || size == curSize || curSize ==0) :
           "Wrong streams size";
         size = Math.max(size, curSize);
       } catch (IOException e) {
-        LOG.error("getEditLogSize: editstream.length failed. removing editlog (" +
-            idx + ") " + es.getName());
-        if(al==null) al = new ArrayList<EditLogOutputStream>(1);
-        al.add(es);
+        LOG.error("getEditLogSize: editstream.length failed. removing journal " + j, e);
+        badJournals.add(j);
       }
     }
-    if(al!=null) disableAndReportErrorOnStreams(al);
+    disableAndReportErrorOnJournals(badJournals);
+    
     return size;
+  }
+  
+  /**
+   * Used only by unit tests.
+   */
+  List<JournalManager> getJournals() {
+    return journals;
   }
   
   /**
@@ -886,22 +780,6 @@ public class FSEditLog implements NNStorageListener {
     }
 
     waitForSyncToFinish();
-    Iterator<StorageDirectory> it = storage.dirIterator(NameNodeDirType.EDITS);
-    if(!it.hasNext()) 
-      return;
-    //
-    // If edits.new already exists in some directory, verify it
-    // exists in all directories.
-    //
-    boolean alreadyExists = existsNew(it.next());
-    while(it.hasNext()) {
-      StorageDirectory sd = it.next();
-      if(alreadyExists != existsNew(sd))
-        throw new IOException(getEditNewFile(sd) 
-              + "should " + (alreadyExists ? "" : "not ") + "exist.");
-    }
-    if(alreadyExists)
-      return; // nothing to do, edits.new exists!
 
     // check if any of failed storage is now available and put it back
     storage.attemptRestoreRemovedStorage();
@@ -918,42 +796,20 @@ public class FSEditLog implements NNStorageListener {
    * @param dest new stream path relative to the storage directory root.
    * @throws IOException
    */
-  synchronized void divertFileStreams(String dest) throws IOException {
+  synchronized void divertFileStreams(final String dest) throws IOException {
     Preconditions.checkState(state == State.WRITING_EDITS,
         "Bad state: " + state);
 
     waitForSyncToFinish();
 
-    assert getNumEditStreams() >= getNumEditsDirs() :
-      "Inconsistent number of streams";
-    ArrayList<EditLogOutputStream> errorStreams = null;
-    EditStreamIterator itE = 
-      (EditStreamIterator)getOutputStreamIterator(JournalType.FILE);
-    Iterator<StorageDirectory> itD = 
-      storage.dirIterator(NameNodeDirType.EDITS);
-    while(itE.hasNext() && itD.hasNext()) {
-      EditLogOutputStream eStream = itE.next();
-      StorageDirectory sd = itD.next();
-      if(!eStream.getName().startsWith(sd.getRoot().getPath()))
-        throw new IOException("Inconsistent order of edit streams: " + eStream);
-      try {
-        // close old stream
-        closeStream(eStream);
-        // create new stream
-        eStream = new EditLogFileOutputStream(new File(sd.getRoot(), dest),
-            sizeOutputFlushBuffer);
-        eStream.create();
-        // replace by the new stream
-        itE.replace(eStream);
-      } catch (IOException e) {
-        LOG.warn("Error in editStream " + eStream.getName(), e);
-        if(errorStreams == null)
-          errorStreams = new ArrayList<EditLogOutputStream>(1);
-        errorStreams.add(eStream);
+    mapJournalsAndReportErrors(new JournalManagerClosure() {
+      
+      @Override
+      public void apply(JournalManager jm) throws IOException {
+        jm.divertFileStreams(dest);
       }
-    }
-    disableAndReportErrorOnStreams(errorStreams);
-  }
+    }, "Diverting file streams to " + dest);
+      }
 
   /**
    * Removes the old edit log and renames edits.new to edits.
@@ -961,7 +817,7 @@ public class FSEditLog implements NNStorageListener {
    */
   synchronized void purgeEditLog() throws IOException {
     Preconditions.checkState(state == State.WRITING_EDITS_NEW,
-                             "Bad state: " + state);
+        "Bad state: " + state);
 
     waitForSyncToFinish();
     revertFileStreams(
@@ -991,65 +847,17 @@ public class FSEditLog implements NNStorageListener {
    * @param dest new stream path relative to the storage directory root.
    * @throws IOException
    */
-  synchronized void revertFileStreams(String source) throws IOException {
+  synchronized void revertFileStreams(final String source) throws IOException {
     waitForSyncToFinish();
 
-    assert getNumEditStreams() >= getNumEditsDirs() :
-      "Inconsistent number of streams";
-    ArrayList<EditLogOutputStream> errorStreams = null;
-    EditStreamIterator itE = 
-      (EditStreamIterator)getOutputStreamIterator(JournalType.FILE);
-    Iterator<StorageDirectory> itD = 
-      storage.dirIterator(NameNodeDirType.EDITS);
-    while(itE.hasNext() && itD.hasNext()) {
-      EditLogOutputStream eStream = itE.next();
-      StorageDirectory sd = itD.next();
-      if(!eStream.getName().startsWith(sd.getRoot().getPath()))
-        throw new IOException("Inconsistent order of edit streams: " + eStream +
-                              " does not start with " + sd.getRoot().getPath());
-      try {
-        // close old stream
-        closeStream(eStream);
-        // rename edits.new to edits
-        File editFile = getEditFile(sd);
-        File prevEditFile = new File(sd.getRoot(), source);
-        if(prevEditFile.exists()) {
-          if(!prevEditFile.renameTo(editFile)) {
-            //
-            // renameTo() fails on Windows if the destination
-            // file exists.
-            //
-            if(!editFile.delete() || !prevEditFile.renameTo(editFile)) {
-              throw new IOException("Rename failed for " + sd.getRoot());
-            }
-          }
-        }
-        // open new stream
-        eStream = new EditLogFileOutputStream(editFile, sizeOutputFlushBuffer);
-        // replace by the new stream
-        itE.replace(eStream);
-      } catch (IOException e) {
-        LOG.warn("Error in editStream " + eStream.getName(), e);
-        if(errorStreams == null)
-          errorStreams = new ArrayList<EditLogOutputStream>(1);
-        errorStreams.add(eStream);
-      }
-    }
-    disableAndReportErrorOnStreams(errorStreams);
-  }
+    mapJournalsAndReportErrors(new JournalManagerClosure() {
 
-  /**
-   * Return the name of the edit file
-   */
-  synchronized File getFsEditName() {
-    StorageDirectory sd = null;   
-    for (Iterator<StorageDirectory> it = 
-      storage.dirIterator(NameNodeDirType.EDITS); it.hasNext();) {
-      sd = it.next();   
-      if(sd.getRoot().canRead())
-        return getEditFile(sd);
-    }
-    return null;
+      @Override
+      public void apply(JournalManager jm) throws IOException {
+        jm.revertFileStreams(source);
+      }
+      
+    }, "Reverting file streams to " + source);
   }
 
   /**
@@ -1058,7 +866,7 @@ public class FSEditLog implements NNStorageListener {
   synchronized long getFsEditTime() {
     Iterator<StorageDirectory> it = storage.dirIterator(NameNodeDirType.EDITS);
     if(it.hasNext())
-      return getEditFile(it.next()).lastModified();
+      return NNStorage.getEditFile(it.next()).lastModified();
     return 0;
   }
 
@@ -1073,7 +881,9 @@ public class FSEditLog implements NNStorageListener {
 
   // sets the initial capacity of the flush buffer.
   public void setBufferCapacity(int size) {
-    sizeOutputFlushBuffer = size;
+    for (JournalManager jm : journals) {
+      jm.setBufferCapacity(size);
+    }
   }
 
 
@@ -1095,6 +905,7 @@ public class FSEditLog implements NNStorageListener {
   synchronized void logJSpoolStart(NamenodeRegistration bnReg, // backup node
                       NamenodeRegistration nnReg) // active name-node
   throws IOException {
+    /*
     if(bnReg.isRole(NamenodeRole.CHECKPOINT))
       return; // checkpoint node does not stream edits
     if(editStreams == null)
@@ -1111,6 +922,8 @@ public class FSEditLog implements NNStorageListener {
       editStreams.add(boStream);
     }
     logEdit(OP_JSPOOL_START, (Writable[])null);
+    TODO: backupnode is disabled
+    */
   }
 
   /**
@@ -1118,88 +931,20 @@ public class FSEditLog implements NNStorageListener {
    * store yet.
    */
   synchronized void logEdit(final int length, final byte[] data) {
-    if(getNumEditStreams() == 0)
+    if (journals.isEmpty())
       throw new java.lang.IllegalStateException(NO_JOURNAL_STREAMS_WARNING);
     long start = beginTransaction();
-
-    mapStreamsAndReportErrors(new StreamClosure() {
-        @Override
-        public void apply(EditLogOutputStream stream) throws IOException {
-          stream.write(data, 0, length);
-        }
-      }, "Writing op to stream");
+    
+    mapJournalsAndReportErrors(new JournalManagerClosure() {
+      @Override
+      public void apply(JournalManager jm) throws IOException {
+        jm.getCurrentStream().write(data, 0, length);        
+      }      
+    }, "Logging edit");
 
     endTransaction(start);
   }
 
-  /**
-   * Iterates output streams based of the same type.
-   * Type null will iterate over all streams.
-   */
-  private class EditStreamIterator implements Iterator<EditLogOutputStream> {
-    JournalType type;
-    int prevIndex; // for remove()
-    int nextIndex; // for next()
-
-    EditStreamIterator(JournalType streamType) {
-      this.type = streamType;
-      this.nextIndex = 0;
-      this.prevIndex = 0;
-    }
-
-    public boolean hasNext() {
-      synchronized(FSEditLog.this) {
-        if(editStreams == null || 
-           editStreams.isEmpty() || nextIndex >= editStreams.size())
-          return false;
-        while(nextIndex < editStreams.size()
-              && !editStreams.get(nextIndex).getType().isOfType(type))
-          nextIndex++;
-        return nextIndex < editStreams.size();
-      }
-    }
-
-    public EditLogOutputStream next() {
-      EditLogOutputStream stream = null;
-      synchronized(FSEditLog.this) {
-        stream = editStreams.get(nextIndex);
-        prevIndex = nextIndex;
-        nextIndex++;
-        while(nextIndex < editStreams.size()
-            && !editStreams.get(nextIndex).getType().isOfType(type))
-        nextIndex++;
-      }
-      return stream;
-    }
-
-    public void remove() {
-      nextIndex = prevIndex; // restore previous state
-      removeStream(prevIndex); // remove last returned element
-      hasNext(); // reset nextIndex to correct place
-    }
-
-    void replace(EditLogOutputStream newStream) {
-      synchronized (FSEditLog.this) {
-        assert 0 <= prevIndex && prevIndex < editStreams.size() :
-                                                          "Index out of bound.";
-        editStreams.set(prevIndex, newStream);
-      }
-    }
-  }
-
-  /**
-   * Get stream iterator for the specified type.
-   */
-  public Iterator<EditLogOutputStream>
-  getOutputStreamIterator(JournalType streamType) {
-    return new EditStreamIterator(streamType);
-  }
-
-  private void closeStream(EditLogOutputStream eStream) throws IOException {
-    eStream.setReadyToFlush();
-    eStream.flush();
-    eStream.close();
-  }
 
   void incrementCheckpointTime() {
     storage.incrementCheckpointTime();
@@ -1208,6 +953,7 @@ public class FSEditLog implements NNStorageListener {
   }
 
   synchronized void releaseBackupStream(NamenodeRegistration registration) {
+    /*
     Iterator<EditLogOutputStream> it =
                                   getOutputStreamIterator(JournalType.BACKUP);
     ArrayList<EditLogOutputStream> errorStreams = null;
@@ -1224,11 +970,14 @@ public class FSEditLog implements NNStorageListener {
     }
     assert backupNode == null || backupNode.isRole(NamenodeRole.BACKUP) :
       "Not a backup node corresponds to a backup stream";
-    disableAndReportErrorOnStreams(errorStreams);
+    disableAndReportErrorOnJournals(errorStreams);
+    TODO BN currently disabled
+    */
   }
 
   synchronized boolean checkBackupRegistration(
       NamenodeRegistration registration) {
+    /*
     Iterator<EditLogOutputStream> it =
                                   getOutputStreamIterator(JournalType.BACKUP);
     boolean regAllowed = !it.hasNext();
@@ -1251,8 +1000,12 @@ public class FSEditLog implements NNStorageListener {
     }
     assert backupNode == null || backupNode.isRole(NamenodeRole.BACKUP) :
       "Not a backup node corresponds to a backup stream";
-    disableAndReportErrorOnStreams(errorStreams);
+    disableAndReportErrorOnJournals(errorStreams);
     return regAllowed;
+    
+    TODO BN currently disabled
+    */
+    return false;
   }
   
   static BytesWritable toBytesWritable(Options.Rename... options) {
@@ -1262,39 +1015,80 @@ public class FSEditLog implements NNStorageListener {
     }
     return new BytesWritable(bytes);
   }
-
-  /**
-   * Get the StorageDirectory for a stream
-   * @param es Stream whose StorageDirectory we wish to know
-   * @return the matching StorageDirectory
-   */
-  StorageDirectory getStorageDirectoryForStream(EditLogOutputStream es) {
-    String parentStorageDir = ((EditLogFileOutputStream)es).getFile().getParentFile().getParentFile().getAbsolutePath();
-
-    for (Iterator<StorageDirectory> it = storage.dirIterator(); it.hasNext();) {
-      StorageDirectory sd = it.next();
-      FSNamesystem.LOG.info("comparing: " + parentStorageDir 
-                            + " and " + sd.getRoot().getAbsolutePath()); 
-      if (parentStorageDir.equals(sd.getRoot().getAbsolutePath()))
-        return sd;
-    }
-    return null;
+  
+  //// Iteration across journals
+  private interface JournalManagerClosure {
+    public void apply(JournalManager jm) throws IOException;
   }
 
-  private synchronized void disableStream(EditLogOutputStream stream) {
-    try { stream.close(); } catch (IOException e) {
-      // nothing to do.
-      LOG.warn("Failed to close eStream " + stream.getName()
-               + " before removing it (might be ok)");
+  /**
+   * Apply the given function across all of the journal managers, disabling
+   * any for which the closure throws an IOException.
+   * @param status message used for logging errors (e.g. "opening journal")
+   */
+  private void mapJournalsAndReportErrors(
+      JournalManagerClosure closure, String status) {
+    ArrayList<JournalManager> badJournals = Lists.newArrayList();
+    for (JournalManager j : journals) {
+      try {
+        closure.apply(j);
+      } catch (IOException ioe) {
+        LOG.error("Error " + status + " (journal " + j + ")", ioe);
+        badJournals.add(j);
+      }
     }
-    editStreams.remove(stream);
+    disableAndReportErrorOnJournals(badJournals);
+  }
+  
+  /**
+   * Called when some journals experience an error in some operation.
+   * This propagates errors to the storage level.
+   */
+  void disableAndReportErrorOnJournals(List<JournalManager> badJournals) {
+    if (badJournals == null || badJournals.isEmpty()) {
+      return; // nothing to do
+    }
 
-    if (editStreams.size() <= 0) {
-      String msg = "Fatal Error: All storage directories are inaccessible.";
+    ArrayList<StorageDirectory> errorDirs = new ArrayList<StorageDirectory>();
+    for (JournalManager j : badJournals) {
+      LOG.error("Disabling journal " + j);
+      StorageDirectory sd = j.getStorageDirectory();
+      if (sd != null) {
+        errorDirs.add(sd);
+        // We will report this error to storage, which will propagate back
+        // to our listener interface, at which point we'll mark it faulty.
+      } else {
+        // Just mark it faulty ourselves, since it's not associated with a
+        // storage directory.
+        markJournalFaulty(j);
+      }
+    }
+    
+    try {
+      storage.reportErrorsOnDirectories(errorDirs);
+    } catch (IOException ioe) {
+      LOG.error("Problem reporting error on directories ", ioe);
+    }
+  }
+ 
+  private synchronized void markJournalFaulty(JournalManager journal) {
+    try {
+      journal.abort();
+    } catch (IOException e) {
+      LOG.warn("Failed to abort faulty journal " + journal
+          + " before removing it (might be OK)", e);
+    }
+    journals.remove(journal);
+    faultyJournals.add(journal);
+
+    if (journals.isEmpty()) {
+      String msg = "Fatal Error: All journals are inaccessible.";
       LOG.fatal(msg, new IOException(msg));
       Runtime.getRuntime().exit(-1);
     }
   }
+
+
 
   /**
    * Error Handling on a storageDirectory
@@ -1304,22 +1098,18 @@ public class FSEditLog implements NNStorageListener {
   @Override // NNStorageListener
   public synchronized void errorOccurred(StorageDirectory sd)
       throws IOException {
-    ArrayList<EditLogOutputStream> errorStreams
-      = new ArrayList<EditLogOutputStream>();
-
-    for (EditLogOutputStream eStream : editStreams) {
-      LOG.error("Unable to log edits to " + eStream.getName()
-                + "; removing it");
-
-      StorageDirectory streamStorageDir = getStorageDirectoryForStream(eStream);
-      if (sd == streamStorageDir) {
-        errorStreams.add(eStream);
+    
+    LOG.debug("Error occurred on " + sd);
+    
+    for (JournalManager jm : journals) {
+      if (jm.getStorageDirectory() == sd) {
+        LOG.warn("Marking corresponding journal " + jm + " faulty");
+        markJournalFaulty(jm);
+        return;
       }
     }
-
-    for (EditLogOutputStream eStream : errorStreams) {
-      disableStream(eStream);
-    }
+    
+    LOG.debug("Faulty " + sd + " did not correspond to any live journal manager.");
   }
 
   @Override // NNStorageListener
@@ -1333,35 +1123,26 @@ public class FSEditLog implements NNStorageListener {
   @Override // NNStorageListener
   public synchronized void directoryAvailable(StorageDirectory sd)
       throws IOException {
-    // TODO this logic is very suspect, but will be re-done anyhow in a future
-    // patch on HDFS-1073
-    if (sd.getStorageDirType().isOfType(NameNodeDirType.EDITS)
-        && (state == State.WRITING_EDITS || state == State.WRITING_EDITS_NEW)) {
-      File eFile = getEditFile(sd);
-      addNewEditLogStream(eFile);
+    for (JournalManager jm : journals) {
+      assert (jm.getStorageDirectory() != sd) :
+        "Storage directory " + sd + " being restored but wasn't marked faulty";
     }
-  }
-  
-  //// Iteration across streams
-  private interface StreamClosure {
-    public void apply(EditLogOutputStream jm) throws IOException;
-  }
- 
-  /**
-   * Apply the given function across all of the edit streams, disabling
-   * any for which the closure throws an IOException.
-   * @param status message used for logging errors (e.g. "opening journal")
-   */
-  private void mapStreamsAndReportErrors(StreamClosure closure, String status) {
-    ArrayList<EditLogOutputStream> badStreams = new ArrayList<EditLogOutputStream>();
-    for (EditLogOutputStream stream : editStreams) {
-      try {
-        closure.apply(stream);
-      } catch (IOException ioe) {
-        LOG.error("Error " + status + " (stream " + stream + ")", ioe);
-        badStreams.add(stream);
+
+    for (Iterator<JournalManager> iter = faultyJournals.iterator();
+         iter.hasNext();) {
+      JournalManager jm = iter.next();
+      if (jm.getStorageDirectory() == sd) {
+        try {
+          jm.restore();
+          iter.remove();
+          journals.add(jm);
+        } catch (IOException ioe) {
+          // TODO make sure this code is covered by unit tests!
+          LOG.error("Unable to restore storage directory " + sd, ioe);
+          storage.reportErrorsOnDirectory(sd);
+        }
+        break;
       }
     }
-    disableAndReportErrorOnStreams(badStreams);
   }
 }
