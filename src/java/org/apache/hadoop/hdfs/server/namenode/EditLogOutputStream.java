@@ -63,6 +63,8 @@ implements JournalStream {
   /** {@inheritDoc} */
   abstract public void close() throws IOException;
 
+  abstract public void abort() throws IOException;
+  
   /**
    * All data that has been written to the stream so far will be flushed.
    * New data can be still written to the stream while flushing is performed.

@@ -180,7 +180,7 @@ public class TestEditLogRace {
       FSEditLog editLog = fsimage.getEditLog();
 
       // set small size of flush buffer
-      editLog.setBufferCapacity(2048);
+      editLog.setOutputBufferCapacity(2048);
       editLog.close();
       editLog.open();
 
@@ -257,7 +257,7 @@ public class TestEditLogRace {
       FSEditLog editLog = fsimage.getEditLog();
 
       // set small size of flush buffer
-      editLog.setBufferCapacity(2048);
+      editLog.setOutputBufferCapacity(2048);
       editLog.close();
       editLog.open();
 
@@ -340,9 +340,10 @@ public class TestEditLogRace {
       FSImage fsimage = namesystem.getFSImage();
       FSEditLog editLog = fsimage.getEditLog();
 
-      ArrayList<EditLogOutputStream> streams = editLog.getEditStreams();
-      EditLogOutputStream spyElos = spy(streams.get(0));
-      streams.set(0, spyElos);
+      FSEditLog.JournalAndStream jas = editLog.getJournals().get(0);
+      EditLogFileOutputStream spyElos =
+          spy((EditLogFileOutputStream)jas.getCurrentStream());
+      jas.setCurrentStreamForTests(spyElos);
 
       final AtomicReference<Throwable> deferredException =
           new AtomicReference<Throwable>();
