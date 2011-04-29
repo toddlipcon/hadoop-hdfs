@@ -94,5 +94,6 @@ public interface FSConstants {
   // -35: file names based on transaction IDs
 
   // Record of version numbers for specific changes:
+  public static final int FIRST_EDITLOG_HAS_TXIDS_VERSION = -34;
   public static final int FIRST_TXNID_BASED_LAYOUT_VERSION = -35;
 }
