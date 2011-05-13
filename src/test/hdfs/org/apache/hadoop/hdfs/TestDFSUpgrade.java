@@ -173,7 +173,7 @@ public class TestDFSUpgrade {
       cluster = createCluster();
       checkNameNode(nameNodeDirs, EXPECTED_TXID);
       if (numDirs > 1)
-        TestParallelImageWrite.checkImages(cluster.getNamesystem(), numDirs, EXPECTED_TXID);
+        TestParallelImageWrite.checkImages(cluster.getNamesystem(), numDirs);
       cluster.shutdown();
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
       
@@ -297,8 +297,7 @@ public class TestDFSUpgrade {
       UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "current");
       cluster = createCluster();
       checkNameNode(nameNodeDirs, EXPECTED_TXID);
-      TestParallelImageWrite.checkImages(
-          cluster.getNamesystem(), numDirs, EXPECTED_TXID);
+      TestParallelImageWrite.checkImages(cluster.getNamesystem(), numDirs);
       cluster.shutdown();
       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
     }

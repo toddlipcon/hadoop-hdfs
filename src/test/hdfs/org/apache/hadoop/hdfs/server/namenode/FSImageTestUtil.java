@@ -40,6 +40,7 @@ import org.apache.hadoop.io.MD5Hash;
 import org.mockito.Mockito;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
@@ -187,5 +188,32 @@ public abstract class FSImageTestUtil {
       ret.put(f, getFileMD5(f));
     }
     return ret;
+  }
+
+  /**
+   * @return a List which contains the "current" dir for each storage
+   * directory of the given type. 
+   */
+  public static List<File> getCurrentDirs(NNStorage storage,
+      NameNodeDirType type) {
+    List<File> ret = Lists.newArrayList();
+    for (StorageDirectory sd : storage.dirIterable(type)) {
+      ret.add(sd.getCurrentDir());
+    }
+    return ret;
+  }
+
+  /**
+   * @return the fsimage file with the most recent transaction ID in the
+   * given storage directory.
+   * @throws IOException 
+   */
+  public static File getLatestImageFile(StorageDirectory sd)
+  throws IOException {
+    FSImageTransactionalStorageInspector inspector =
+      new FSImageTransactionalStorageInspector();
+    inspector.inspectDirectory(sd);
+    
+    return inspector.getLatestImage().getFile();
   }
 }
