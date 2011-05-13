@@ -372,8 +372,6 @@ public class FSImage implements NNStorageListener, Closeable {
     
     List<StorageDirectory> errorSDs =
       Collections.synchronizedList(new ArrayList<StorageDirectory>());
-    List<Thread> saveThreads = new ArrayList<Thread>();
-    File curDir, prevDir, tmpDir;
     for (Iterator<StorageDirectory> it = storage.dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
       LOG.info("Starting upgrade of image directory " + sd.getRoot()
@@ -382,9 +380,9 @@ public class FSImage implements NNStorageListener, Closeable {
                + ".\n   new LV = " + storage.getLayoutVersion()
                + "; new CTime = " + storage.getCTime());
       try {
-        curDir = sd.getCurrentDir();
-        prevDir = sd.getPreviousDir();
-        tmpDir = sd.getPreviousTmp();
+        File curDir = sd.getCurrentDir();
+        File prevDir = sd.getPreviousDir();
+        File tmpDir = sd.getPreviousTmp();
         assert curDir.exists() : "Current directory must exist.";
         assert !prevDir.exists() : "prvious directory must not exist.";
         assert !tmpDir.exists() : "prvious.tmp directory must not exist.";
@@ -393,28 +391,27 @@ public class FSImage implements NNStorageListener, Closeable {
         // rename current to tmp
         NNStorage.rename(curDir, tmpDir);
         
-        // launch thread to save new image
-        FSImageSaver saver = new FSImageSaver(sd, errorSDs,
-            editLog.getLastWrittenTxId());
-        Thread saveThread = new Thread(saver, saver.toString());
-        saveThreads.add(saveThread);
-        saveThread.start();
-        
+        if (!curDir.mkdir()) {
+          throw new IOException("Cannot create directory " + curDir);
+        }
       } catch (Exception e) {
         LOG.error("Failed upgrade of image directory " + sd.getRoot(), e);
         errorSDs.add(sd);
         continue;
       }
     }
-    waitForThreads(saveThreads);
-    saveThreads.clear();
+    storage.reportErrorsOnDirectories(errorSDs);
+    errorSDs.clear();
+
+    saveFSImageInAllDirs(editLog.getLastWrittenTxId());
 
     for (Iterator<StorageDirectory> it = storage.dirIterator(); it.hasNext();) {
       StorageDirectory sd = it.next();
-      if (errorSDs.contains(sd)) continue;
       try {
-        prevDir = sd.getPreviousDir();
-        tmpDir = sd.getPreviousTmp();
+        sd.write();
+        
+        File prevDir = sd.getPreviousDir();
+        File tmpDir = sd.getPreviousTmp();
         // rename tmp to previous
         NNStorage.rename(tmpDir, prevDir);
       } catch (IOException ioe) {
@@ -427,7 +424,6 @@ public class FSImage implements NNStorageListener, Closeable {
     isUpgradeFinalized = false;
     storage.reportErrorsOnDirectories(errorSDs);
     storage.initializeDistributedUpgrade();
-    editLog.startLogSegment(0);
   }
 
   private void doRollback() throws IOException {

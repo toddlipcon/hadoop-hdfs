@@ -102,14 +102,14 @@ public class TestParallelImageWrite extends TestCase {
       assertEquals(dirstatus.getGroup() + "_XXX", newdirstatus.getGroup());
       rootmtime = fs.getFileStatus(rootpath).getModificationTime();
 
-      final long checkAfterRestart = checkImages(fsn, numNamenodeDirs);
+      final long checkAfterRestart = checkImages(fsn, numNamenodeDirs, 0xDEADBEEF);
       
       // Modify the system and then perform saveNamespace
       files.cleanup(fs, dir);
       files.createFiles(fs, dir);
       fsn.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
       cluster.getNameNode().saveNamespace();
-      final long checkAfterModify = checkImages(fsn, numNamenodeDirs);
+      final long checkAfterModify = checkImages(fsn, numNamenodeDirs, 0xDEADBEEF);
       assertTrue("Modified namespace doesn't change fsimage contents",
           checkAfterRestart != checkAfterModify);
       fsn.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
@@ -129,7 +129,9 @@ public class TestParallelImageWrite extends TestCase {
    *     if less than two StorageDirectory are provided, or if the
    *     actual number of StorageDirectory is less than configured.
    */
-  public static long checkImages(FSNamesystem fsn, int numImageDirs) throws Exception {
+  public static long checkImages(
+      FSNamesystem fsn, int numImageDirs, long expectedTxId)
+  throws Exception {
     NNStorage stg = fsn.getFSImage().getStorage();
     //any failed StorageDirectory is removed from the storageDirs list
     assertEquals("Some StorageDirectories failed Upgrade",
@@ -141,7 +143,8 @@ public class TestParallelImageWrite extends TestCase {
     List<Long> checksums = new ArrayList<Long>();
     while (iter.hasNext()) {
       StorageDirectory sd = iter.next();
-      File fsImage = fsn.getFSImage().getStorage().getStorageFile(sd, NameNodeFile.IMAGE, 0);
+      File fsImage = NNStorage.getStorageFile(
+          sd, NameNodeFile.IMAGE, expectedTxId);
       PureJavaCrc32 crc = new PureJavaCrc32();
       FileInputStream in = new FileInputStream(fsImage);
       byte[] buff = new byte[4096];
