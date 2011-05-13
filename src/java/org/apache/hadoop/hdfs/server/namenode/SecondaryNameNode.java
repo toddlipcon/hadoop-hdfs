@@ -373,6 +373,7 @@ public class SecondaryNameNode implements Runnable {
               checkpointImage.getStorage().imageDigest = sig.imageDigest;
               LOG.info("Downloaded file " + srcNames[0].getName() + " size " +
                   srcNames[0].length() + " bytes.");
+              checkpointImage.checkpointUploadDone(sig.lastCheckpointTxId, sig.getImageDigest());
             }
         
             // get edits file
@@ -391,7 +392,6 @@ public class SecondaryNameNode implements Runnable {
                 
             }
         
-            checkpointImage.checkpointUploadDone(sig.lastCheckpointTxId, sig.getImageDigest());
             return Boolean.valueOf(downloadImage);
           }
         });
@@ -752,12 +752,17 @@ public class SecondaryNameNode implements Runnable {
         editsFiles.add(f);
       }
       LOG.info("2NN merging...");
+      LOG.debug("Before merge, image digest is " + this.getStorage().getImageDigest());
       loadEdits(editsFiles);
       
       storage.setClusterID(sig.getClusterID());
       storage.setBlockPoolID(sig.getBlockpoolID());
+      
+      // TODO I think the below validation might be too strict -- it would disallow
+      // multiple concurrent checkpointers with big fsimages. Test this.
       sig.validateStorageInfo(this);
       saveFSImageInAllDirs(editLog.getLastWrittenTxId());
+      LOG.debug("After save, image digest is " + this.getStorage().getImageDigest());
       getStorage().writeAll();
     }
   }

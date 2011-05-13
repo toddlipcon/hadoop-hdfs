@@ -994,8 +994,12 @@ public class FSImage implements NNStorageListener, Closeable {
     }
     storage.reportErrorsOnDirectories(badSds);
     
+    // So long as this is the newest image available,
+    // advertise it as such to other checkpointers
+    // from now on
     if (txid > storage.getCheckpointTxId()) {
       storage.setCheckpointTxId(txid);
+      storage.setImageDigest(digest);
     }
   }
 
