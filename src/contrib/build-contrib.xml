@@ -270,7 +270,7 @@
 
 
   <target name="ivy-download" description="To download ivy " unless="offline">
-    <get src="${ivy_repo_url}" dest="${ivy.jar}" usetimestamp="true"/>
+    <get src="${ivy_repo_url}" dest="${ivy.jar}" usetimestamp="true" skipexisting="true"/>
   </target>
 
   <target name="ivy-init-antlib" depends="ivy-download,ivy-probe-antlib" unless="ivy.found">

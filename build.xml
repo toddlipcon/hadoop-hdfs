@@ -1472,7 +1472,7 @@
   <target name="ant-eclipse-download" unless="ant-eclipse.jar.exists"
           description="Downloads the ant-eclipse binary.">
     <get src="http://downloads.sourceforge.net/project/ant-eclipse/ant-eclipse/1.0/ant-eclipse-1.0.bin.tar.bz2"
-         dest="${build.dir}/ant-eclipse-1.0.bin.tar.bz2" usetimestamp="false" />
+         dest="${build.dir}/ant-eclipse-1.0.bin.tar.bz2" usetimestamp="false" skipexisting="true" />
 
     <untar src="${build.dir}/ant-eclipse-1.0.bin.tar.bz2"
            dest="${build.dir}" compression="bzip2">
@@ -1534,11 +1534,11 @@
   </target>
 
   <target name="ivy-download" description="To download ivy" unless="offline">
-    <get src="${ivy_repo_url}" dest="${ivy.jar}" usetimestamp="true"/>
+    <get src="${ivy_repo_url}" dest="${ivy.jar}" usetimestamp="true" skipexisting="true"/>
   </target>
 
   <target name="ant-task-download" description="To download mvn-ant-task" unless="offline">
-    <get src="${ant_task_repo_url}" dest="${ant_task.jar}" usetimestamp="true"/>
+    <get src="${ant_task_repo_url}" dest="${ant_task.jar}" usetimestamp="true" skipexisting="true"/>
   </target>
 
   <target name="mvn-taskdef" depends="ant-task-download">
@@ -1864,7 +1864,7 @@
 
 	<target name="jsvc" >
     <mkdir dir="${jsvc.build.dir}" />
-    <get src="${jsvc.location}" dest="${jsvc.build.dir}/${jsvc.dest.name}" />
+    <get src="${jsvc.location}" dest="${jsvc.build.dir}/${jsvc.dest.name}" skipexisting="true" />
 
     <untar compression="gzip" src="${jsvc.build.dir}/${jsvc.dest.name}" dest="${jsvc.build.dir}" />
 
